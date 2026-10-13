@@ -1,0 +1,4 @@
+# 改行コードを一切変換しない。
+# サーバ上はファイルごとに CRLF / LF が混在しており（report_generation.php=CRLF,
+# upload_files.php=LF など）、変換するとデプロイ時に差分が発生するため。
+* -text

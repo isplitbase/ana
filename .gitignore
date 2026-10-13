@@ -1,0 +1,13 @@
+# 認証情報は絶対にコミットしない
+pf
+*.pem
+*.ppk
+*-[0-9a-f][0-9a-f]*.json
+service-account*.json
+.env
+
+# ログ・バックアップ
+*.log
+sapis_backup-*/
+*.bak
+*.bak_*
