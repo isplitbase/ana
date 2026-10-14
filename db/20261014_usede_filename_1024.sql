@@ -1,0 +1,13 @@
+-- 2026-10-14: usede.filename の桁あふれ対策
+--
+-- batch_delete_expired.py が毎時以下のエラーで失敗し、DB論理削除が
+-- 1件も完了せず、同じ案件を毎時リトライし続けていた。
+--   [ERROR] DB 更新失敗: 1406 (22001): Data too long for column 'filename' at row 1
+--
+-- 原因: usede.filename が varchar(100) に対し、ai_case.upload_file_name は
+--       複数ファイルを "|,|" で連結するため 148〜160 文字になることがある
+--       （例: ai_case 100020 = 160文字 / 100023 = 148文字）。
+--
+-- 適用済み: dbwindow(本番) / dbtest1(開発) とも 2026-10-14 実行済み。
+--           既存データの最大は 99 文字のため切り捨ては発生していない。
+ALTER TABLE usede MODIFY COLUMN filename VARCHAR(1024) NULL;
