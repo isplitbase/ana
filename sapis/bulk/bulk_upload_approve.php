@@ -119,6 +119,26 @@ foreach ($rows as $r) {
     $aiCaseId = (int)$conn->insert_id;
     $stmt->close();
 
+    // ── GCS 上で <案件ID>-<キー>.pdf へ複製する ──
+    // pdf-converter がファイル名から ai_case_id を抽出する仕様のため
+    // （^(\d+)[-_] に一致しないと 500 になる）、受付時の
+    // bulk/<batch>/<seq>.pdf のままでは変換できない。
+    try {
+        $dstObject = $aiCaseId . '-' . $fileKey . '.pdf';
+        $newUri = bulk_copy_gcs($r['gcs_path'], $dstObject, $GLOBALS['gcs_bucket'] ?? 'analygent');
+        $stmt = $conn->prepare("UPDATE ai_case SET full_file_Paths = ?, update_at = now() WHERE ai_case_id = ?");
+        $stmt->bind_param('si', $newUri, $aiCaseId);
+        $stmt->execute();
+        $stmt->close();
+    } catch (Throwable $e) {
+        bulk_log("APPROVE COPY_NG batch_id={$batch_id} seq={$seq} case={$aiCaseId} " . $e->getMessage());
+        bulk_update_file($conn, (int)$r['id'], [
+            'status'        => BULK_F_ERROR,
+            'error_message' => '変換用ファイルの準備に失敗しました',
+        ]);
+        continue;
+    }
+
     bulk_update_file($conn, (int)$r['id'], [
         'status'         => BULK_F_APPROVED,
         'posting_period' => $period,

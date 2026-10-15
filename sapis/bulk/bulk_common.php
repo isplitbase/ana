@@ -269,3 +269,24 @@ function bulk_get_id_token(string $audience): ?string {
         return null;
     }
 }
+
+/**
+ * GCS 内でオブジェクトをコピーする（ダウンロードせずサーバ側で複製する）。
+ *
+ * pdf-converter は入力ファイル名の先頭から ai_case_id を抽出する仕様
+ * （derive_ai_case_id_from_input_obj / 正規表現 ^(\d+)[-_] ）のため、
+ * 受付時の bulk/<batch>/<seq>.pdf のままでは変換できない。
+ * 承認で ai_case_id が決まった時点で <案件ID>-<キー>.pdf へ複製する。
+ */
+function bulk_copy_gcs(string $srcUri, string $dstObject, string $bucketName): string {
+    if (!empty($GLOBALS['google_application_credentials'])) {
+        putenv('GOOGLE_APPLICATION_CREDENTIALS=' . $GLOBALS['google_application_credentials']);
+    }
+    if (!preg_match('#^gs://([^/]+)/(.+)$#', $srcUri, $m)) {
+        throw new RuntimeException('コピー元のURIが不正です: ' . $srcUri);
+    }
+    $storage = new \Google\Cloud\Storage\StorageClient();
+    $srcBucket = $storage->bucket($m[1]);
+    $srcBucket->object($m[2])->copy($storage->bucket($bucketName), ['name' => ltrim($dstObject, '/')]);
+    return "gs://{$bucketName}/" . ltrim($dstObject, '/');
+}
