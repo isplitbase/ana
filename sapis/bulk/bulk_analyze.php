@@ -185,6 +185,28 @@ function bulk_wait_for_read(mysqli $conn, int $aiCaseId, int $timeoutSec = 1200)
 }
 
 /**
+ * 人が確認した決算日と、読取AIが書類から読んだ決算日を照合する。
+ *
+ * 読取AI（callgpt.py）は ai_case.closing_date に今期の決算日を書く。
+ * 1ファイル=1案件なので、これは確認画面で人が確定した決算日と同じ期を指すはず。
+ * 食い違っても読取結果は残し、要確認として示すだけにする
+ * （どちらが正しいかは人が書類を見て判断する）。
+ *
+ * @return array{read:?string, check:string}
+ */
+function bulk_compare_end_date(mysqli $conn, int $aiCaseId, ?string $confirmed): array {
+    $r = $conn->query("SELECT closing_date FROM ai_case WHERE ai_case_id = " . (int)$aiCaseId);
+    $row = $r ? $r->fetch_assoc() : null;
+    $read = bulk_parse_date($row['closing_date'] ?? null);
+    $conf = bulk_parse_date($confirmed);
+
+    if ($conf === null || $read === null) {
+        return ['read' => $read, 'check' => BULK_EDC_SKIP];
+    }
+    return ['read' => $read, 'check' => ($conf === $read) ? BULK_EDC_MATCH : BULK_EDC_MISMATCH];
+}
+
+/**
  * get_ai_response.php を叩いて読取結果を確定させる。
  *
  * do_ai.php は読取を開始して status='1000' にするだけで、
@@ -431,8 +453,18 @@ function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun)
             continue;
         }
 
-        bulk_update_file($conn, $id, ['status' => BULK_F_DONE, 'error_message' => '']);
-        bulk_log("ANALYZE OK batch_id={$batchId} seq={$t['seq']} case={$aiCaseId}");
+        // ── 7. 決算日の照合（人が確認した決算日 と 読取AIが読んだ決算日）──
+        $edc = bulk_compare_end_date($conn, $aiCaseId, $t['confirmed_end_date'] ?? null);
+
+        bulk_update_file($conn, $id, [
+            'status'         => BULK_F_DONE,
+            'error_message'  => '',
+            'read_end_date'  => $edc['read'],
+            'end_date_check' => $edc['check'],
+        ]);
+        bulk_log("ANALYZE OK batch_id={$batchId} seq={$t['seq']} case={$aiCaseId}"
+               . " end_check={$edc['check']} confirmed=" . ($t['confirmed_end_date'] ?? '-')
+               . " read=" . ($edc['read'] ?? '-'));
         bulk_refresh_counts($conn, $batchId);
     }
 
@@ -444,16 +476,21 @@ function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun)
         bulk_log("ANALYZE PARTIAL batch_id={$batchId}（他のワーカーが処理中）");
         return;
     }
-    $r = $conn->query("SELECT COUNT(*) AS err FROM bulk_batch_files
-                        WHERE batch_id = '" . $conn->real_escape_string($batchId) . "'
-                          AND status = '" . BULK_F_ERROR . "'");
-    $errCount = (int)($r->fetch_assoc()['err'] ?? 0);
+    $r = $conn->query("SELECT SUM(status = '" . BULK_F_ERROR . "') AS err,
+                              SUM(end_date_check = '" . BULK_EDC_MISMATCH . "') AS edc_ng
+                         FROM bulk_batch_files
+                        WHERE batch_id = '" . $conn->real_escape_string($batchId) . "'");
+    $cnt = $r->fetch_assoc();
+    $errCount = (int)($cnt['err'] ?? 0);
+    $edcCount = (int)($cnt['edc_ng'] ?? 0);
+
+    $notes = [];
+    if ($errCount > 0) { $notes[] = "{$errCount} 件が失敗"; }
+    if ($edcCount > 0) { $notes[] = "{$edcCount} 件で決算日が食い違い（要確認）"; }
 
     bulk_update_batch($conn, $batchId, [
         'status'  => BULK_ST_DONE,
-        'message' => $errCount > 0
-            ? "解析が終わりました（{$errCount} 件が失敗しています）。"
-            : '解析が終わりました。',
+        'message' => $notes ? '解析が終わりました（' . implode('、', $notes) . '）。' : '解析が終わりました。',
     ]);
-    bulk_log("ANALYZE END batch_id={$batchId} errors={$errCount}");
+    bulk_log("ANALYZE END batch_id={$batchId} errors={$errCount} end_date_mismatch={$edcCount}");
 }

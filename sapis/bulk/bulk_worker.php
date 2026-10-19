@@ -136,13 +136,14 @@ function bulk_phase_detect(mysqli $conn, array $batch, int $port, bool $dryRun):
             'posting_period'  => (string)(bulk_posting_period($r['labels']) ?? ''),
             'detected_labels' => implode(',', $r['labels']),
             'detected_years'  => $years,
+            'detected_end_date' => $r['end_date'] ?? null,
             'detect_reason'   => mb_substr($r['reason'], 0, 2000),
             'check_result'    => $check['result'],
             'check_code'      => (string)($check['code'] ?? ''),
             'check_message'   => (string)($check['message'] ?? ''),
         ]);
         bulk_log("DETECT OK batch_id={$batchId} seq={$t['seq']} labels=" . implode('/', $r['labels'])
-                 . " years={$years} check={$check['result']}");
+                 . " years={$years} end=" . ($r['end_date'] ?? '-') . " check={$check['result']}");
         bulk_refresh_counts($conn, $batchId);
     }
 

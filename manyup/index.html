@@ -19,7 +19,7 @@
   .panel h2{font-size:15px;margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
   .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
   label{min-width:88px;color:var(--muted)}
-  input[type=text],input[type=password],select{
+  input[type=text],input[type=password],input[type=date],select{
     padding:7px 10px;border:1px solid var(--line);border-radius:5px;font-size:14px;background:#fff}
   input[type=text],input[type=password]{min-width:280px}
   button{padding:8px 16px;border:0;border-radius:5px;background:var(--accent);color:#fff;
@@ -312,6 +312,7 @@
         if (r.batch_status === 'DONE' || r.batch_status === 'ERROR') {
           log('処理が終わりました（' + r.batch_status + '）: ' + (r.message || ''), 'ok');
           stopPolling();
+          loadReview();   // 決算日の照合結果を一覧に出す
         }
       })
       .catch(function (e) { log(e.message, 'err'); stopPolling(); });
@@ -342,7 +343,8 @@
       $('btnApprove').disabled = (r.batch_status !== 'REVIEW');
       log('確認データ取得: 全' + r.summary.total + ' 件（OK ' + r.summary.ok +
           ' / 要確認 ' + r.summary.warn + ' / NG ' + r.summary.ng +
-          ' / 失敗 ' + r.summary.error + '）', 'ok');
+          ' / 失敗 ' + r.summary.error +
+          (r.summary.end_date_mismatch ? ' / 決算日の食い違い ' + r.summary.end_date_mismatch : '') + '）', 'ok');
     }).catch(function (e) { log(e.message, 'err'); });
   }
 
@@ -356,12 +358,34 @@
       $('reviewArea').innerHTML = '<p class="hint">対象がありません。</p>';
       return;
     }
+    var editable = (r.batch_status === 'REVIEW');
     var h = '<table><thead><tr>' +
-      '<th>#</th><th>ファイル名</th><th>期区分</th><th>判定</th><th>年度</th>' +
-      '<th>チェック</th><th>含める</th></tr></thead><tbody>';
+      '<th>#</th><th>ファイル名</th><th>期区分</th><th>判定</th><th>決算日（今期）</th>' +
+      '<th>チェック</th><th>決算日の照合<br><span class="hint">読取後</span></th><th>含める</th></tr></thead><tbody>';
     r.files.forEach(function (f) {
       var cls = f.check_result === 'OK' ? 'ok' : (f.check_result === 'NG' ? 'ng' :
                 (f.check_result ? 'warn' : 'plain'));
+
+      // 決算日：期判定AIの値を初期値にし、人が直せるようにする。直した値が照合の「正」になる。
+      var ed = (f.suggested && f.suggested.end_date) || '';
+      var edNote = f.detected_end_date ? '' :
+                   '<br><span class="hint">AIが読めませんでした。書類を見て入力してください</span>';
+      var years = (f.detected_years || []).join(' / ');
+      var edCell = '<input type="date" class="ed" data-seq="' + f.seq + '" value="' + esc(ed) + '"' +
+                   (editable ? '' : ' disabled') + '>' + edNote +
+                   (years ? '<br><span class="hint">年度：' + esc(years) + '</span>' : '');
+
+      // 読取後の照合：人が確定した決算日 と 読取AIが書類から読んだ決算日
+      var cmp = '<span class="hint">—</span>';
+      if (f.end_date_check === 'MATCH') {
+        cmp = '<span class="tag ok">一致</span>';
+      } else if (f.end_date_check === 'MISMATCH') {
+        cmp = '<span class="tag ng">食い違い</span><br><span class="hint">確定 ' + esc(f.confirmed_end_date) +
+              '<br>読取 ' + esc(f.read_end_date) + '</span>';
+      } else if (f.end_date_check === 'SKIP') {
+        cmp = '<span class="tag plain">照合なし</span><br><span class="hint">' +
+              (f.confirmed_end_date ? '読取で決算日が取れず' : '決算日が未入力') + '</span>';
+      }
       h += '<tr>' +
         '<td class="num">' + f.seq + '</td>' +
         '<td>' + esc(f.name) + (f.error_message ? '<br><span class="tag ng">' + esc(f.error_message) + '</span>' : '') + '</td>' +
@@ -370,15 +394,19 @@
             return '<option value="' + p + '"' + (f.posting_period === p ? ' selected' : '') + '>' + p + '</option>';
           }).join('') + '</select></td>' +
         '<td>' + esc((f.detected_labels || []).join(' / ')) + '</td>' +
-        '<td>' + esc((f.detected_years || []).join(' / ')) + '</td>' +
+        '<td>' + edCell + '</td>' +
         '<td><span class="tag ' + cls + '">' + esc(f.check_result || '—') + '</span>' +
             (f.check_message ? '<br><span class="hint">' + esc(f.check_message) + '</span>' : '') + '</td>' +
+        '<td>' + cmp + '</td>' +
         '<td><input type="checkbox" class="inc" data-seq="' + f.seq + '"' +
             (f.suggested && f.suggested.include ? ' checked' : '') + '></td>' +
         '</tr>';
     });
     h += '</tbody></table>';
-    h += '<p class="hint">期区分：P1＝今期のみ／P2＝今期+前期／P3＝前期+前々期</p>';
+    h += '<p class="hint">期区分：P1＝今期のみ／P2＝今期+前期／P3＝前期+前々期</p>' +
+         '<p class="hint">決算日：期判定AIが読んだ値を初期表示しています。違っていれば直してから承認してください。' +
+         '読取の後、ここで確定した決算日と、読取AIが書類から読んだ決算日を照合し、食い違えば「食い違い」と表示します。' +
+         '空欄のまま承認すると照合しません。</p>';
     $('reviewArea').innerHTML = h;
   }
 
@@ -389,7 +417,9 @@
     Array.prototype.forEach.call(document.querySelectorAll('.inc'), function (cb) {
       var seq = Number(cb.getAttribute('data-seq'));
       var sel = document.querySelector('.pp[data-seq="' + seq + '"]');
-      files.push({ seq: seq, include: cb.checked, posting_period: sel ? sel.value : null });
+      var ed  = document.querySelector('.ed[data-seq="' + seq + '"]');
+      files.push({ seq: seq, include: cb.checked, posting_period: sel ? sel.value : null,
+                   end_date: ed ? ed.value : '' });
     });
     var inc = files.filter(function (f) { return f.include; }).length;
     if (!inc) { log('承認する対象がありません', 'err'); return; }

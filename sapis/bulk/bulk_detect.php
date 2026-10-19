@@ -63,12 +63,21 @@ function bulk_detect_period(string $gcsUri, string $originalName, int $port): ar
             if (!is_array($labels)) { $labels = [(string)$labels]; }
             $years = $res['年度'] ?? [];
             if (!is_array($years)) { $years = [(string)$years]; }
+
+            // 決算日（ana-getpdfinfo が 2026-10-19 から返す）。古い版では無いので空になる。
+            // このファイルの最新期の決算日を取る。1ファイル=1案件なので、これが案件の今期にあたる。
+            $ends = $res['決算日'] ?? [];
+            if (!is_array($ends)) { $ends = [(string)$ends]; }
+            $ends = array_values(array_filter(array_map('bulk_parse_date', array_map('strval', $ends))));
+            rsort($ends);
+
             return [
-                'ok'     => true,
-                'labels' => array_values(array_map('strval', $labels)),
-                'years'  => array_values(array_map('strval', $years)),
-                'reason' => (string)($res['reason'] ?? ''),
-                'error'  => null,
+                'ok'       => true,
+                'labels'   => array_values(array_map('strval', $labels)),
+                'years'    => array_values(array_map('strval', $years)),
+                'end_date' => $ends[0] ?? null,
+                'reason'   => (string)($res['reason'] ?? ''),
+                'error'    => null,
             ];
         }
 

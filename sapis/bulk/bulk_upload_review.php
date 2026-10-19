@@ -50,9 +50,11 @@ $batch = bulk_fetch_batch($conn, $batch_id, $company_id);
 // ── 明細 ──
 $sql = "SELECT seq, original_name, gcs_path, size_bytes, status, posting_period,
                detected_labels, detected_years, detect_reason,
+               detected_end_date, confirmed_end_date, read_end_date, end_date_check,
                check_result, check_code, check_message, ai_case_id, error_message
           FROM bulk_batch_files WHERE batch_id = ?";
-if ($only === 'warn')     { $sql .= " AND (check_result <> 'OK' OR status = '" . BULK_F_ERROR . "')"; }
+if ($only === 'warn')     { $sql .= " AND (check_result <> 'OK' OR status = '" . BULK_F_ERROR . "'"
+                                   . " OR end_date_check = '" . BULK_EDC_MISMATCH . "')"; }
 elseif ($only === 'ng')   { $sql .= " AND (check_result = 'NG'  OR status = '" . BULK_F_ERROR . "')"; }
 $sql .= " ORDER BY seq";
 
@@ -72,6 +74,11 @@ while ($r = $res->fetch_assoc()) {
         'detected_labels' => $r['detected_labels'] ? explode(',', $r['detected_labels']) : [],
         'detected_years'  => $r['detected_years']  ? explode(',', $r['detected_years'])  : [],
         'detect_reason'   => $r['detect_reason'],
+        // 決算日（Y-m-d）。detected=期判定AI / confirmed=人が承認時に確定 / read=読取AI
+        'detected_end_date'  => $r['detected_end_date'],
+        'confirmed_end_date' => $r['confirmed_end_date'],
+        'read_end_date'      => $r['read_end_date'],
+        'end_date_check'     => $r['end_date_check'],   // MATCH / MISMATCH / SKIP（読取後のみ）
         'check_result'    => $r['check_result'],
         'check_code'      => $r['check_code'] !== '' ? $r['check_code'] : null,
         'check_message'   => $r['check_message'] !== '' ? $r['check_message'] : null,
@@ -80,6 +87,7 @@ while ($r = $res->fetch_assoc()) {
         // 承認時にそのまま送り返してもらう既定値。画面で変更可能。
         'suggested'       => [
             'posting_period' => $r['posting_period'] !== '' ? $r['posting_period'] : null,
+            'end_date'       => $r['confirmed_end_date'] ?? $r['detected_end_date'],
             'include'        => ($r['status'] !== BULK_F_ERROR),
         ],
     ];
@@ -94,7 +102,8 @@ $stmt = $conn->prepare(
         SUM(check_result = 'OK')   AS ok,
         SUM(check_result = 'WARN') AS warn,
         SUM(check_result = 'NG')   AS ng,
-        SUM(status = '" . BULK_F_ERROR . "') AS err
+        SUM(status = '" . BULK_F_ERROR . "') AS err,
+        SUM(end_date_check = '" . BULK_EDC_MISMATCH . "') AS edc_ng
      FROM bulk_batch_files WHERE batch_id = ?"
 );
 $stmt->bind_param('s', $batch_id);
@@ -112,6 +121,7 @@ bulk_json([
         'warn'  => (int)$s['warn'],
         'ng'    => (int)$s['ng'],
         'error' => (int)$s['err'],
+        'end_date_mismatch' => (int)$s['edc_ng'],   // 読取後、決算日が食い違った件数
     ],
     'files' => $files,
 ]);

@@ -74,6 +74,12 @@ const BULK_F_DONE      = 'DONE';
 const BULK_F_ERROR     = 'ERROR';
 const BULK_F_SKIPPED   = 'SKIPPED';   // ユーザーが確認画面で除外した
 
+/** 読取後の決算日の照合（人が確認した決算日 と 読取AIが書類から読んだ決算日）
+ *  読取そのものの成否とは別に記録する。食い違っても解析結果は残し、要確認として示す。 */
+const BULK_EDC_MATCH    = 'MATCH';     // 一致
+const BULK_EDC_MISMATCH = 'MISMATCH';  // 食い違い（要確認）
+const BULK_EDC_SKIP     = 'SKIP';      // どちらかが空で照合できない
+
 // ─────────────────────────────────────────
 // 応答
 // ─────────────────────────────────────────
@@ -311,6 +317,35 @@ function bulk_copy_gcs(string $srcUri, string $dstObject, string $bucketName): s
     $srcBucket = $storage->bucket($m[1]);
     $srcBucket->object($m[2])->copy($storage->bucket($bucketName), ['name' => ltrim($dstObject, '/')]);
     return "gs://{$bucketName}/" . ltrim($dstObject, '/');
+}
+
+/**
+ * 決算日の文字列を Y-m-d にそろえる。読めなければ null。
+ *
+ * 期判定AI・読取AI・人の入力で表記がばらつくため、照合の前にそろえる。
+ * 実際に読取AIの closing_date には「2023年5月31日」と「2023年05月31日」が混在している。
+ * 受け付ける形: 2025-09-30 / 2025/9/30 / 2025.9.30 / 2025年9月30日 / 令和7年9月30日（平成・昭和・元年も可）
+ */
+function bulk_parse_date(?string $text): ?string {
+    $s = trim((string)$text);
+    if ($s === '') { return null; }
+    $s = mb_convert_kana($s, 'n');                 // 全角数字を半角に
+    $s = str_replace('元年', '1年', $s);
+
+    $y = $m = $d = null;
+    if (preg_match('/^(\d{4})\s*[-\/.年]\s*(\d{1,2})\s*[-\/.月]\s*(\d{1,2})/u', $s, $x)) {
+        [$y, $m, $d] = [(int)$x[1], (int)$x[2], (int)$x[3]];
+    } else {
+        $eras = ['令和' => 2018, '平成' => 1988, '昭和' => 1925];
+        foreach ($eras as $era => $base) {
+            if (preg_match('/' . $era . '\s*(\d{1,2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})/u', $s, $x)) {
+                [$y, $m, $d] = [$base + (int)$x[1], (int)$x[2], (int)$x[3]];
+                break;
+            }
+        }
+    }
+    if ($y === null || !checkdate($m, $d, $y)) { return null; }
+    return sprintf('%04d-%02d-%02d', $y, $m, $d);
 }
 
 /**

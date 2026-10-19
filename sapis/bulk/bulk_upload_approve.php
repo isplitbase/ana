@@ -7,9 +7,12 @@
  * 受信 (JSON):
  *   loginkey : string 必須
  *   batch_id : string 必須
- *   files    : [ { seq:1, include:true, posting_period:"P2" }, ... ]
+ *   files    : [ { seq:1, include:true, posting_period:"P2", end_date:"2025-03-31" }, ... ]
  *              省略した seq は判定結果のまま採用する。
  *              include=false の行は SKIPPED にして案件を作らない。
+ *              end_date は人が確認した決算日（今期）。読取後に、読取AIが書類から
+ *              読んだ決算日と照合する「正」として保存する。省略時は期判定AIの値、
+ *              空文字を送ると「照合しない」になる。
  *
  * 返却:
  *   { status:"success", batch_id, approved:n, skipped:n, batch_status:"APPROVED" }
@@ -91,9 +94,22 @@ foreach ($rows as $r) {
         bulk_error('#' . $seq . ' の期区分が未指定です。確認画面で指定してください。', 400);
     }
 
+    // 人が確認した決算日。照合の「正」になる。
+    // 送られてこなければ期判定AIの値をそのまま採用し、空文字なら照合しない。
+    if (array_key_exists('end_date', $o)) {
+        $raw = trim((string)$o['end_date']);
+        $endDate = bulk_parse_date($raw);
+        if ($raw !== '' && $endDate === null) {
+            bulk_error('#' . $seq . ' の決算日「' . $raw . '」を日付として読めません（例: 2025-03-31）。', 400);
+        }
+    } else {
+        $endDate = $r['detected_end_date'];
+    }
+
     // 既に案件が作られていれば作り直さない（再承認時の二重作成を防ぐ）
     if ($r['ai_case_id'] !== null) {
-        bulk_update_file($conn, (int)$r['id'], ['status' => BULK_F_APPROVED, 'posting_period' => $period]);
+        bulk_update_file($conn, (int)$r['id'], ['status' => BULK_F_APPROVED, 'posting_period' => $period,
+                                                'confirmed_end_date' => $endDate]);
         $approved++;
         continue;
     }
@@ -128,9 +144,10 @@ foreach ($rows as $r) {
     }
 
     bulk_update_file($conn, (int)$r['id'], [
-        'status'         => BULK_F_APPROVED,
-        'posting_period' => $period,
-        'ai_case_id'     => $aiCaseId,
+        'status'             => BULK_F_APPROVED,
+        'posting_period'     => $period,
+        'confirmed_end_date' => $endDate,
+        'ai_case_id'         => $aiCaseId,
     ]);
     $approved++;
 }
