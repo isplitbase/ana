@@ -32,6 +32,20 @@ const BULK_MAX_FILE_SIZE = 50 * 1024 * 1024;
 /** GCS 上の保存先プレフィックス */
 const BULK_GCS_PREFIX = 'bulk/';
 
+/** 同時に解析できる案件数。
+ *
+ *  期判定は Cloud Run を呼ぶだけなので何本でも並列にできるが、解析は
+ *  do_ai.php がこのVM上で Python を起動するため、メモリとCPUを大きく使う。
+ *  2 vCPU / 7.7GB・swap なしの構成で3本同時に走らせたところ、
+ *  メモリが枯渇して MySQL が落ち、読取が5件失敗した（2026-10-19 本番）。
+ *  増やす場合は free -m と load average を見ながら1ずつにすること。 */
+const BULK_ANALYZE_PARALLEL = 1;
+
+/** 掴んだまま落ちたワーカーのファイルを回収するまでの秒数。
+ *  プロセスが消えていることに加えて、この時間が過ぎていることも条件にする
+ *  （PIDが使い回された場合に、生きている処理を横取りしないため）。 */
+const BULK_STALE_SECONDS = 180;
+
 /** 確認画面の方式 */
 const BULK_MODE_PAGE = 'A';   // ページ単位で1枚ずつ確認
 const BULK_MODE_FILE = 'B';   // ファイル単位の一覧で確認
@@ -328,6 +342,81 @@ function bulk_claim_file(mysqli $conn, string $batchId, string $from, string $to
           ORDER BY update_at DESC LIMIT 1"
     );
     return $res ? $res->fetch_assoc() : null;
+}
+
+/**
+ * PID のプロセスが生きているかを見る。
+ * posix 拡張が無い環境でも動くよう /proc を直接見る。
+ */
+function bulk_pid_alive(?int $pid): bool {
+    if (!$pid || $pid <= 0) { return false; }
+    return is_dir('/proc/' . $pid);
+}
+
+/**
+ * 掴んだまま落ちたワーカーのファイルを元の状態に戻す。
+ *
+ * ワーカーが異常終了すると、そのファイルは DETECTING / ANALYZING のまま残る。
+ * bulk_claim_file は「元の状態」のものしか拾わないため、放置すると
+ * 誰も処理せず、バッチが永久に完了しない（2026-10-19 本番で発生）。
+ *
+ * @param string $stuck  取り残されている状態（例: ANALYZING）
+ * @param string $back   戻す先の状態（例: APPROVED）
+ * @return int 戻した件数
+ */
+function bulk_reclaim_stale(mysqli $conn, string $batchId, string $stuck, string $back): int {
+    $bid = $conn->real_escape_string($batchId);
+    $res = $conn->query(
+        "SELECT id, seq, worker_pid FROM bulk_batch_files
+          WHERE batch_id = '{$bid}'
+            AND status = '" . $conn->real_escape_string($stuck) . "'
+            AND update_at < DATE_SUB(now(), INTERVAL " . BULK_STALE_SECONDS . " SECOND)"
+    );
+    if (!$res) { return 0; }
+
+    $n = 0;
+    while ($row = $res->fetch_assoc()) {
+        if (bulk_pid_alive(isset($row['worker_pid']) ? (int)$row['worker_pid'] : null)) {
+            continue;   // まだ生きている。時間がかかっているだけ
+        }
+        $conn->query(
+            "UPDATE bulk_batch_files
+                SET status = '" . $conn->real_escape_string($back) . "',
+                    worker_pid = NULL,
+                    update_at = now()
+              WHERE id = " . (int)$row['id'] . "
+                AND status = '" . $conn->real_escape_string($stuck) . "'"
+        );
+        if ($conn->affected_rows > 0) {
+            $n++;
+            bulk_log("RECLAIM batch_id={$batchId} seq={$row['seq']} {$stuck} → {$back}"
+                   . " (pid={$row['worker_pid']} は終了済み)");
+        }
+    }
+    return $n;
+}
+
+/**
+ * 他のワーカーが実際に解析中のファイル数を数える。
+ *
+ * 件数だけでは、落ちたワーカーの取り残しも「解析中」に見えてしまうため、
+ * PID が生きているものだけを数える。
+ */
+function bulk_count_live_analyzing(mysqli $conn, string $batchId, int $selfPid): int {
+    $bid = $conn->real_escape_string($batchId);
+    $res = $conn->query(
+        "SELECT worker_pid FROM bulk_batch_files
+          WHERE batch_id = '{$bid}'
+            AND status = '" . BULK_F_ANALYZING . "'
+            AND (worker_pid IS NULL OR worker_pid <> {$selfPid})"
+    );
+    if (!$res) { return 0; }
+
+    $n = 0;
+    while ($row = $res->fetch_assoc()) {
+        if (bulk_pid_alive(isset($row['worker_pid']) ? (int)$row['worker_pid'] : null)) { $n++; }
+    }
+    return $n;
 }
 
 /** 指定状態のファイルが残っているかを数える */

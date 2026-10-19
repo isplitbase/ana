@@ -179,6 +179,40 @@ function bulk_call_get_ai_response(string $loginkey, int $aiCaseId, int $port): 
     if ($code !== 200) {
         return ['ok' => false, 'error' => "get_ai_response http={$code} " . mb_substr((string)$body, 0, 300)];
     }
+
+    // HTTP 200 だけでは成否を判定できない。
+    // get_ai_response.php は読取に失敗したとき ai_case.status を AIERR にするが、
+    // 応答は 200 のまま {"status":"error", ...} を返す作りになっている。
+    // そのため 200 を成功とみなすと、画面には「完了」と出るのに中身は空、
+    // という状態になる（2026-10-19 本番で9件中5件が該当）。
+    $decoded = json_decode((string)$body, true);
+    if (is_array($decoded) && (($decoded['status'] ?? '') === 'error')) {
+        $msg = (string)($decoded['message'] ?? '読取に失敗しました');
+        return ['ok' => false, 'error' => 'get_ai_response ' . mb_substr($msg, 0, 300)];
+    }
+    return ['ok' => true, 'error' => null];
+}
+
+/**
+ * 読取が実際に成立したかを ai_case の状態で確かめる。
+ *
+ * 応答の形に依存せず、最後にDBの状態を見るのが確実なため、
+ * bulk_call_get_ai_response の判定とは別に、もう一段確認する。
+ * 完了とみなす状態は案件一覧の表示（_ai_case_list_helper.php）に合わせる。
+ */
+function bulk_case_read_ok(mysqli $conn, int $aiCaseId): array {
+    $r = $conn->query("SELECT status, CHAR_LENGTH(COALESCE(response,'')) AS len
+                         FROM ai_case WHERE ai_case_id = " . (int)$aiCaseId);
+    $row = $r ? $r->fetch_assoc() : null;
+    if (!$row) { return ['ok' => false, 'error' => '案件が見つかりません']; }
+
+    $status = (string)$row['status'];
+    if (!in_array($status, ['AIOK', 'FNOK', 'FNST'], true)) {
+        return ['ok' => false, 'error' => "読取に失敗しました（案件の状態={$status}）"];
+    }
+    if ((int)$row['len'] <= 0) {
+        return ['ok' => false, 'error' => '読取結果が空でした'];
+    }
     return ['ok' => true, 'error' => null];
 }
 
@@ -220,6 +254,10 @@ function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun)
         return;
     }
 
+    // 落ちたワーカーが掴んだままのファイルを戻してから始める。
+    // 戻さないと bulk_claim_file が拾えず、バッチが完了しない。
+    bulk_reclaim_stale($conn, $batchId, BULK_F_ANALYZING, BULK_F_APPROVED);
+
     $remain = bulk_count_files($conn, $batchId, [BULK_F_APPROVED, BULK_F_ANALYZING]);
     bulk_log("ANALYZE START batch_id={$batchId} files={$remain}");
 
@@ -232,7 +270,16 @@ function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun)
         return;
     }
 
-    // 1件ずつロックして取り出す（複数ワーカーで並列実行できるようにするため）
+    // 解析は do_ai.php がこのVM上で Python を起動するため、同時実行数を抑える。
+    // 他のワーカーが既に上限まで解析していれば、ここでは何もせず譲る。
+    $selfPid = getmypid();
+    if (bulk_count_live_analyzing($conn, $batchId, $selfPid) >= BULK_ANALYZE_PARALLEL) {
+        bulk_log("ANALYZE BUSY batch_id={$batchId}（同時実行の上限 "
+               . BULK_ANALYZE_PARALLEL . " に達しているため譲ります）");
+        return;
+    }
+
+    // 1件ずつロックして取り出す
     while (($t = bulk_claim_file($conn, $batchId, BULK_F_APPROVED, BULK_F_ANALYZING)) !== null) {
         $id       = (int)$t['id'];
         $aiCaseId = (int)$t['ai_case_id'];
@@ -299,6 +346,18 @@ function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun)
                 'error_message' => mb_substr((string)$fin['error'], 0, 1000),
             ]);
             bulk_log("ANALYZE GETRES_NG batch_id={$batchId} seq={$t['seq']} case={$aiCaseId} {$fin['error']}");
+            bulk_refresh_counts($conn, $batchId);
+            continue;
+        }
+
+        // ── 5. 読取が成立したかを案件の状態で確かめる ──
+        $chk = bulk_case_read_ok($conn, $aiCaseId);
+        if (!$chk['ok']) {
+            bulk_update_file($conn, $id, [
+                'status'        => BULK_F_ERROR,
+                'error_message' => mb_substr((string)$chk['error'], 0, 1000),
+            ]);
+            bulk_log("ANALYZE READ_NG batch_id={$batchId} seq={$t['seq']} case={$aiCaseId} {$chk['error']}");
             bulk_refresh_counts($conn, $batchId);
             continue;
         }

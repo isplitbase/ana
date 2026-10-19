@@ -87,6 +87,9 @@ function bulk_phase_detect(mysqli $conn, array $batch, int $port, bool $dryRun):
         'message' => '帳票の期を判定しています。',
     ]);
 
+    // 落ちたワーカーが掴んだままのファイルを戻してから始める
+    bulk_reclaim_stale($conn, $batchId, BULK_F_DETECTING, BULK_F_RECEIVED);
+
     $remain = bulk_count_files($conn, $batchId, [BULK_F_RECEIVED, BULK_F_DETECTING]);
     bulk_log("DETECT START batch_id={$batchId} files={$remain}");
 
