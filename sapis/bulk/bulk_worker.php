@@ -173,8 +173,11 @@ bulk_log("CLAIM batch_id={$batchId} status={$batch['status']} pid=" . getmypid()
 try {
     if ($batch['status'] === BULK_ST_QUEUED || $batch['status'] === BULK_ST_DETECTING) {
         bulk_phase_detect($conn, $batch, (int)$port, $dryRun);
-    } elseif ($batch['status'] === BULK_ST_APPROVED) {
-        // 解析フェーズは bulk_analyze.php に分ける（次段で実装）
+    } elseif ($batch['status'] === BULK_ST_APPROVED || $batch['status'] === BULK_ST_ANALYZING) {
+        // ANALYZING も受け入れる。1本目が APPROVED → ANALYZING に変えた後、
+        // 2本目以降はここに来るため、APPROVED だけを見ていると何もせず終了し、
+        // 解析が並列にならない（期判定が QUEUED と DETECTING の両方を見るのと同じ理由）。
+        // 解析フェーズは bulk_analyze.php に分けてある
         if (file_exists(__DIR__ . '/bulk_analyze.php')) {
             require_once __DIR__ . '/bulk_analyze.php';
             bulk_phase_analyze($conn, $batch, (int)$port, $dryRun);
