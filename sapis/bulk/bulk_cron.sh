@@ -15,24 +15,30 @@
 # ============================================================================
 set -u
 
-SAPIS="$(cd "$(dirname "$0")" && pwd)"
+# pwd だけではシンボリックリンク(releases/8056)が解決されないため -P を付ける。
+SAPIS="$(cd "$(dirname "$0")" && pwd -P)"
 PHP=/usr/bin/php
 WORKERS=${BULK_WORKERS:-3}          # 同時に走らせる本数。pdf-converter の負荷を見て調整する
 LOGDIR=/var/log/ana
 
 # 8012/8056 のログが混ざらないよう、置かれた場所からポートを取り出す
 # （例: .../releases/20250620-1129_8056/sapis → 8056）
-ENV_PORT="${SAPIS%/sapis}"                      # .../releases/20250620-1129_8056
-ENV_PORT="${ENV_PORT##*_}"                      # 8056
+ENV_PORT="$(basename "$(dirname "$SAPIS")")"   # 20250620-1129_8056
+ENV_PORT="${ENV_PORT##*_}"                     # 8056
 case "$ENV_PORT" in ""|*[!0-9]*) ENV_PORT=unknown ;; esac
 LOG="${LOGDIR}/bulk_${ENV_PORT}_worker_cron_$(date +%Y%m%d).log"
 
 [ -d "$LOGDIR" ] || mkdir -p "$LOGDIR"
 
 # 既に動いている本数を数える
-# 8012 / 8056 でそれぞれ cron を登録するため、自環境のワーカーだけを数える。
-# ファイル名だけで数えると、もう一方の環境のワーカーも含んでしまう。
-RUNNING=$(pgrep -fc -- "${SAPIS}/bulk_worker.php" 2>/dev/null || echo 0)
+# 8012 / 8056 でそれぞれ cron を登録するため、自環境のワーカーだけを数える
+# （ファイル名だけで数えると、もう一方の環境のワーカーも含んでしまう）。
+#
+# pgrep -c は未検出のとき 0 を出力したうえで終了コード1を返すため、
+# 「|| echo 0」と組み合わせると 0 が二重に出て計算が壊れる。
+# 行数で数えれば、検出有無によらず必ず整数ひとつが得られる。
+RUNNING=$(pgrep -f -- "${SAPIS}/bulk_worker.php" 2>/dev/null | wc -l | tr -d " ")
+case "$RUNNING" in ""|*[!0-9]*) RUNNING=0 ;; esac
 NEED=$(( WORKERS - RUNNING ))
 
 if [ "$NEED" -le 0 ]; then
