@@ -122,7 +122,7 @@ foreach ($rows as $r) {
     // ── GCS 上で <案件ID>-<キー>.pdf へ複製する ──
     // pdf-converter がファイル名から ai_case_id を抽出する仕様のため
     // （^(\d+)[-_] に一致しないと 500 になる）、受付時の
-    // bulk/<batch>/<seq>.pdf のままでは変換できない。
+    // bulk/<port>/<batch>/<seq>.pdf のままでは変換できない。
     try {
         $dstObject = $aiCaseId . '-' . $fileKey . '.pdf';
         $newUri = bulk_copy_gcs($r['gcs_path'], $dstObject, $GLOBALS['gcs_bucket'] ?? 'analygent');

@@ -21,7 +21,7 @@
 include "./common.php";
 require_once __DIR__ . '/bulk_common.php';
 
-global $conn, $damy_flag, $gcs_bucket, $google_application_credentials;
+global $conn, $damy_flag, $gcs_bucket, $google_application_credentials, $port;
 
 if (!empty($google_application_credentials)) {
     putenv("GOOGLE_APPLICATION_CREDENTIALS=" . $google_application_credentials);
@@ -119,7 +119,10 @@ foreach ($incoming as $f) {
     }
 
     $seq++;
-    $objectName = BULK_GCS_PREFIX . $batch_id . '/' . sprintf('%03d', $seq) . '.pdf';
+    // GCSバケットは 8012/8056 で共用のため、パスにポートを入れて環境を分ける。
+    // batch_id はDBごとの連番なので、入れないと両環境で同じIDが採番され
+    // 先にアップした側のPDFを上書きしてしまう。
+    $objectName = BULK_GCS_PREFIX . $port . '/' . $batch_id . '/' . sprintf('%03d', $seq) . '.pdf';
 
     try {
         $gcsUri = bulk_upload_to_gcs($f['tmp'], $gcs_bucket, $objectName);

@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS bulk_batch_files (
     batch_id        VARCHAR(20)  NOT NULL,
     seq             INT          NOT NULL COMMENT 'バッチ内の通し番号（1始まり）',
     original_name   VARCHAR(512) NOT NULL COMMENT 'アップロード時のファイル名',
-    gcs_path        VARCHAR(1024) NOT NULL COMMENT 'gs://analygent/bulk/<batch_id>/<seq>.pdf',
+    gcs_path        VARCHAR(1024) NOT NULL COMMENT 'gs://analygent/bulk/<port>/<batch_id>/<seq>.pdf',
     size_bytes      BIGINT                DEFAULT NULL,
     status          VARCHAR(16)  NOT NULL COMMENT 'RECEIVED/DETECTING/DETECTED/APPROVED/ANALYZING/DONE/ERROR/SKIPPED',
     worker_pid      INT                   DEFAULT NULL COMMENT '処理中のワーカーPID（並列制御）',

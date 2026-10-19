@@ -277,7 +277,7 @@ function bulk_get_id_token(string $audience): ?string {
  *
  * pdf-converter は入力ファイル名の先頭から ai_case_id を抽出する仕様
  * （derive_ai_case_id_from_input_obj / 正規表現 ^(\d+)[-_] ）のため、
- * 受付時の bulk/<batch>/<seq>.pdf のままでは変換できない。
+ * 受付時の bulk/<port>/<batch>/<seq>.pdf のままでは変換できない。
  * 承認で ai_case_id が決まった時点で <案件ID>-<キー>.pdf へ複製する。
  */
 function bulk_copy_gcs(string $srcUri, string $dstObject, string $bucketName): string {
