@@ -22,6 +22,8 @@ except ImportError:
     _BOTO3_AVAILABLE = False
 
 import tempfile
+import shutil
+import atexit
 try:
     from google.cloud import storage as gcs_storage
     _GCS_AVAILABLE = True
@@ -836,12 +838,55 @@ try:
     # ローカルパスはそのまま使用
     # ─────────────────────────────────────────────
     _gcs_tmp_dir = tempfile.mkdtemp(prefix="callgpt_gcs_")
+
+    # GCS から落としたファイルの記録。元が GCS にあるので上げ直さない。
+    _gcs_downloaded_locals = set()
+
+    # 作業画像を GCS に退避してから、作業ディレクトリを必ず消す。
+    #
+    # 退避する理由:
+    #   回転・明度補正を通した画像が、AI が実際に読んだものにあたる。
+    #   読み間違いを後から調べる手がかりはこれしか無い。
+    #
+    # 消す理由:
+    #   tempfile.mkdtemp は自動削除しないため、これが無いと読取のたびに
+    #   作業画像が残り続ける。/tmp は tmpfs（RAM上）なので、溜まると
+    #   メモリを食い潰して解析が落ちる（2026-10-19 に本番で発生。
+    #   73回分 3.9GB が残り、空きRAMが 610MB まで減っていた）。
+    #
+    # 保存先は converted/<ローカル名>。ローカル名は converted_<案件ID>- で
+    # 始まるため、既存の自動削除（prefix: converted/converted_<案件ID>-）の
+    # 対象に入り、案件の削除時に一緒に消える。
+    #
+    # 途中で exit(1) しても動くよう atexit に登録する。
+    def _cleanup_gcs_tmp_dir(_d=_gcs_tmp_dir):
+        if gcs_bucket_name and _GCS_AVAILABLE:
+            try:
+                _names = sorted(os.listdir(_d))
+            except Exception as _e:
+                _names = []
+                print(f"[GCS] 作業ディレクトリを読めません: {_e}")
+            for _name in _names:
+                _fp = os.path.join(_d, _name)
+                if not os.path.isfile(_fp):
+                    continue
+                if os.path.abspath(_fp) in _gcs_downloaded_locals:
+                    continue
+                try:
+                    _mime = mimetypes.guess_type(_fp)[0] or "image/png"
+                    upload_to_gcs(_fp, gcs_bucket_name, "converted/" + _name,
+                                  content_type=_mime)
+                except Exception as _e:
+                    print(f"[GCS] 作業画像のアップロードに失敗: {_name} ({_e})")
+        shutil.rmtree(_d, ignore_errors=True)
+    atexit.register(_cleanup_gcs_tmp_dir)
     resolved_paths = []
     for _path in image_paths:
         _path = _path.strip()
         if _path.startswith("gs://"):
             try:
                 _local = download_gcs_to_local(_path, _gcs_tmp_dir)
+                _gcs_downloaded_locals.add(os.path.abspath(_local))
                 resolved_paths.append(_local)
             except Exception as _e:
                 print(f"エラー: GCS からの画像ダウンロードに失敗しました: {_path} ({_e})")
