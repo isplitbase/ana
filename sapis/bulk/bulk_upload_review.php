@@ -74,11 +74,13 @@ while ($r = $res->fetch_assoc()) {
         'detected_labels' => $r['detected_labels'] ? explode(',', $r['detected_labels']) : [],
         'detected_years'  => $r['detected_years']  ? explode(',', $r['detected_years'])  : [],
         'detect_reason'   => $r['detect_reason'],
-        // 決算日（Y-m-d）。detected=期判定AI / confirmed=人が承認時に確定 / read=読取AI
+        // 決算日（Y-m-d）。detected=期判定AI / confirmed=担当者が承認時に確定 / read=読取AI
         'detected_end_date'  => $r['detected_end_date'],
         'confirmed_end_date' => $r['confirmed_end_date'],
         'read_end_date'      => $r['read_end_date'],
-        'end_date_check'     => $r['end_date_check'],   // MATCH / MISMATCH / SKIP（読取後のみ）
+        // 読取後のみ。USER=担当者が変更し、その決算日を案件に採用
+        //            MATCH / MISMATCH / SKIP=読取の決算日を採用（期判定との一致・食い違い・比較不可）
+        'end_date_check'     => $r['end_date_check'],
         'check_result'    => $r['check_result'],
         'check_code'      => $r['check_code'] !== '' ? $r['check_code'] : null,
         'check_message'   => $r['check_message'] !== '' ? $r['check_message'] : null,

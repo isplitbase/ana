@@ -185,25 +185,76 @@ function bulk_wait_for_read(mysqli $conn, int $aiCaseId, int $timeoutSec = 1200)
 }
 
 /**
- * 人が確認した決算日と、読取AIが書類から読んだ決算日を照合する。
- *
- * 読取AI（callgpt.py）は ai_case.closing_date に今期の決算日を書く。
- * 1ファイル=1案件なので、これは確認画面で人が確定した決算日と同じ期を指すはず。
- * 食い違っても読取結果は残し、要確認として示すだけにする
- * （どちらが正しいかは人が書類を見て判断する）。
- *
- * @return array{read:?string, check:string}
+ * 読取AIが書類から読んだ今期の決算日（ai_case.closing_date）を Y-m-d で返す。
+ * 担当者の決算日で上書きする前に呼ぶこと。
  */
-function bulk_compare_end_date(mysqli $conn, int $aiCaseId, ?string $confirmed): array {
+function bulk_read_end_date(mysqli $conn, int $aiCaseId): ?string {
     $r = $conn->query("SELECT closing_date FROM ai_case WHERE ai_case_id = " . (int)$aiCaseId);
     $row = $r ? $r->fetch_assoc() : null;
-    $read = bulk_parse_date($row['closing_date'] ?? null);
-    $conf = bulk_parse_date($confirmed);
+    return bulk_parse_date($row['closing_date'] ?? null);
+}
 
-    if ($conf === null || $read === null) {
-        return ['read' => $read, 'check' => BULK_EDC_SKIP];
-    }
-    return ['read' => $read, 'check' => ($conf === $read) ? BULK_EDC_MATCH : BULK_EDC_MISMATCH];
+/**
+ * 担当者が確認画面で決算日を変更したか。
+ * 確認画面には期判定AIの決算日を初期表示しているので、承認時の値がそれと違えば変更とみなす。
+ * 空欄にして承認した場合は「変更していない」扱い（読取の決算日を使う）。
+ */
+function bulk_end_date_edited(array $file): bool {
+    $confirmed = $file['confirmed_end_date'] ?? null;
+    $detected  = $file['detected_end_date'] ?? null;
+    return $confirmed !== null && $confirmed !== '' && $confirmed !== $detected;
+}
+
+/**
+ * 案件の決算日を、担当者が確定した決算日にする。
+ *
+ * 今期だけ書き換えると、今期と前期が同じ日付になるなど前後関係が崩れるため、
+ * 前期・前々期も今期の1年前・2年前にそろえる。ただし読取で値が入っている欄だけ
+ * （1期分しか無い書類で、空の前期を勝手に埋めないため）。
+ * 決算期を変更した会社のように1年刻みでない場合は、案件画面で確認が要る。
+ *
+ * 書く形は読取AIと同じ「2025年05月31日」。
+ */
+function bulk_apply_user_end_date(mysqli $conn, int $aiCaseId, string $ymd): void {
+    $id  = (int)$aiCaseId;
+    $cur = $conn->query("SELECT closing_date, closing_date_zenki, closing_date_zenzenki
+                           FROM ai_case WHERE ai_case_id = {$id}")->fetch_assoc() ?: [];
+
+    $new = [
+        'closing_date'          => bulk_jp_date($ymd),
+        'closing_date_zenki'    => trim((string)($cur['closing_date_zenki'] ?? '')) !== ''
+                                   ? bulk_jp_date(bulk_shift_years($ymd, -1)) : ($cur['closing_date_zenki'] ?? ''),
+        'closing_date_zenzenki' => trim((string)($cur['closing_date_zenzenki'] ?? '')) !== ''
+                                   ? bulk_jp_date(bulk_shift_years($ymd, -2)) : ($cur['closing_date_zenzenki'] ?? ''),
+    ];
+
+    $stmt = $conn->prepare("UPDATE ai_case
+                               SET closing_date = ?, closing_date_zenki = ?, closing_date_zenzenki = ?,
+                                   update_at = now()
+                             WHERE ai_case_id = ?");
+    $stmt->bind_param('sssi', $new['closing_date'], $new['closing_date_zenki'], $new['closing_date_zenzenki'], $id);
+    $stmt->execute();
+    $stmt->close();
+
+    bulk_log("END_DATE_USER case={$id}"
+           . " 今期 {$cur['closing_date']}→{$new['closing_date']}"
+           . " 前期 {$cur['closing_date_zenki']}→{$new['closing_date_zenki']}"
+           . " 前々期 {$cur['closing_date_zenzenki']}→{$new['closing_date_zenzenki']}");
+}
+
+/**
+ * 決算日の照合結果を決める。
+ *
+ *   担当者が変更した → USER（担当者の決算日を採用。読取の決算日は参考に残す）
+ *   変更していない   → 確定値（＝期判定AIの値）と読取AIの値を比べる
+ *                      一致 MATCH / 食い違い MISMATCH（要確認）/ どちらか空 SKIP
+ *                      どの場合も案件には読取の決算日が入っている
+ */
+function bulk_end_date_check(bool $edited, ?string $confirmed, ?string $read): string {
+    if ($edited) { return BULK_EDC_USER; }
+    $conf = bulk_parse_date($confirmed);
+    if ($conf === null || $read === null) { return BULK_EDC_SKIP; }
+    return ($conf === $read) ? BULK_EDC_MATCH : BULK_EDC_MISMATCH;
 }
 
 /**
@@ -429,6 +480,16 @@ function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun)
         }
         bulk_log("ANALYZE READ_OK batch_id={$batchId} seq={$t['seq']} case={$aiCaseId} status={$wait['status']}");
 
+        // ── 4.5 決算日 ──
+        // 読取AIが読んだ決算日を先に控えておく（上書きすると分からなくなるため）。
+        // 担当者が確認画面で変更していれば、案件の決算日をそれにする。
+        // 確定処理（get_ai_response.php）より前に行い、確定後の画面に反映させる。
+        $readEnd = bulk_read_end_date($conn, $aiCaseId);
+        $edited  = bulk_end_date_edited($t);
+        if ($edited) {
+            bulk_apply_user_end_date($conn, $aiCaseId, (string)$t['confirmed_end_date']);
+        }
+
         // ── 5. 読取結果の確定（ポイント消費もここで行われる）──
         $fin = bulk_call_get_ai_response($loginkey, $aiCaseId, $port);
         if (!$fin['ok']) {
@@ -453,18 +514,18 @@ function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun)
             continue;
         }
 
-        // ── 7. 決算日の照合（人が確認した決算日 と 読取AIが読んだ決算日）──
-        $edc = bulk_compare_end_date($conn, $aiCaseId, $t['confirmed_end_date'] ?? null);
+        // ── 7. 決算日の照合結果を記録 ──
+        $edc = bulk_end_date_check($edited, $t['confirmed_end_date'] ?? null, $readEnd);
 
         bulk_update_file($conn, $id, [
             'status'         => BULK_F_DONE,
             'error_message'  => '',
-            'read_end_date'  => $edc['read'],
-            'end_date_check' => $edc['check'],
+            'read_end_date'  => $readEnd,
+            'end_date_check' => $edc,
         ]);
         bulk_log("ANALYZE OK batch_id={$batchId} seq={$t['seq']} case={$aiCaseId}"
-               . " end_check={$edc['check']} confirmed=" . ($t['confirmed_end_date'] ?? '-')
-               . " read=" . ($edc['read'] ?? '-'));
+               . " end_check={$edc} confirmed=" . ($t['confirmed_end_date'] ?? '-')
+               . " read=" . ($readEnd ?? '-'));
         bulk_refresh_counts($conn, $batchId);
     }
 

@@ -361,7 +361,7 @@
     var editable = (r.batch_status === 'REVIEW');
     var h = '<table><thead><tr>' +
       '<th>#</th><th>ファイル名</th><th>期区分</th><th>判定</th><th>決算日（今期）</th>' +
-      '<th>チェック</th><th>決算日の照合<br><span class="hint">読取後</span></th><th>含める</th></tr></thead><tbody>';
+      '<th>チェック</th><th>案件の決算日<br><span class="hint">読取後</span></th><th>含める</th></tr></thead><tbody>';
     r.files.forEach(function (f) {
       var cls = f.check_result === 'OK' ? 'ok' : (f.check_result === 'NG' ? 'ng' :
                 (f.check_result ? 'warn' : 'plain'));
@@ -371,20 +371,28 @@
       var edNote = f.detected_end_date ? '' :
                    '<br><span class="hint">AIが読めませんでした。書類を見て入力してください</span>';
       var years = (f.detected_years || []).join(' / ');
-      var edCell = '<input type="date" class="ed" data-seq="' + f.seq + '" value="' + esc(ed) + '"' +
-                   (editable ? '' : ' disabled') + '>' + edNote +
+      var edCell = '<input type="date" class="ed" data-seq="' + f.seq + '" data-ai="' + esc(f.detected_end_date || '') +
+                   '" value="' + esc(ed) + '"' + (editable ? '' : ' disabled') + '>' +
+                   '<span class="ed-note" data-seq="' + f.seq + '"></span>' + edNote +
                    (years ? '<br><span class="hint">年度：' + esc(years) + '</span>' : '');
 
-      // 読取後の照合：人が確定した決算日 と 読取AIが書類から読んだ決算日
+      // 読取後：案件にどの決算日を入れたか
+      //   担当者が変更した → 担当者の決算日
+      //   変更していない   → 読取AIが書類から読んだ決算日（期判定と食い違えば要確認）
       var cmp = '<span class="hint">—</span>';
-      if (f.end_date_check === 'MATCH') {
-        cmp = '<span class="tag ok">一致</span>';
+      var rd = f.read_end_date ? esc(f.read_end_date) : 'なし';
+      if (f.end_date_check === 'USER') {
+        cmp = '<b>' + esc(f.confirmed_end_date) + '</b><br><span class="tag plain">担当者の決算日</span>' +
+              '<br><span class="hint">読取 ' + rd +
+              (f.read_end_date === f.confirmed_end_date ? '（一致）' : '') + '</span>';
+      } else if (f.end_date_check === 'MATCH') {
+        cmp = '<b>' + rd + '</b><br><span class="tag ok">読取（期判定と一致）</span>';
       } else if (f.end_date_check === 'MISMATCH') {
-        cmp = '<span class="tag ng">食い違い</span><br><span class="hint">確定 ' + esc(f.confirmed_end_date) +
-              '<br>読取 ' + esc(f.read_end_date) + '</span>';
+        cmp = '<b>' + rd + '</b><br><span class="tag ng">読取（期判定と食い違い）</span>' +
+              '<br><span class="hint">期判定 ' + esc(f.confirmed_end_date) + '　要確認</span>';
       } else if (f.end_date_check === 'SKIP') {
-        cmp = '<span class="tag plain">照合なし</span><br><span class="hint">' +
-              (f.confirmed_end_date ? '読取で決算日が取れず' : '決算日が未入力') + '</span>';
+        cmp = '<b>' + rd + '</b><br><span class="tag plain">読取</span>' +
+              '<br><span class="hint">' + (f.read_end_date ? '期判定の決算日なし' : '読取で決算日が取れず') + '</span>';
       }
       h += '<tr>' +
         '<td class="num">' + f.seq + '</td>' +
@@ -404,10 +412,19 @@
     });
     h += '</tbody></table>';
     h += '<p class="hint">期区分：P1＝今期のみ／P2＝今期+前期／P3＝前期+前々期</p>' +
-         '<p class="hint">決算日：期判定AIが読んだ値を初期表示しています。違っていれば直してから承認してください。' +
-         '読取の後、ここで確定した決算日と、読取AIが書類から読んだ決算日を照合し、食い違えば「食い違い」と表示します。' +
-         '空欄のまま承認すると照合しません。</p>';
+         '<p class="hint">決算日：期判定AIが読んだ値を初期表示しています。' +
+         '<b>変更した場合は、その決算日を案件に入れます</b>（前期・前々期も1年前・2年前にそろえます）。' +
+         '変更しなければ、読取AIが書類から読んだ決算日を使い、期判定の値と食い違えば「要確認」と表示します。</p>';
     $('reviewArea').innerHTML = h;
+
+    // 期判定AIの値から変えたら、その日付を案件に使うことを示す
+    Array.prototype.forEach.call(document.querySelectorAll('.ed'), function (inp) {
+      inp.addEventListener('input', function () {
+        var note = document.querySelector('.ed-note[data-seq="' + inp.getAttribute('data-seq') + '"]');
+        var changed = inp.value && inp.value !== inp.getAttribute('data-ai');
+        note.innerHTML = changed ? '<br><span class="tag warn">変更：この日付を案件に使います</span>' : '';
+      });
+    });
   }
 
   $('btnApprove').addEventListener('click', function () {

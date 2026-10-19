@@ -10,9 +10,10 @@
  *   files    : [ { seq:1, include:true, posting_period:"P2", end_date:"2025-03-31" }, ... ]
  *              省略した seq は判定結果のまま採用する。
  *              include=false の行は SKIPPED にして案件を作らない。
- *              end_date は人が確認した決算日（今期）。読取後に、読取AIが書類から
- *              読んだ決算日と照合する「正」として保存する。省略時は期判定AIの値、
- *              空文字を送ると「照合しない」になる。
+ *              end_date は担当者が確認した決算日（今期）。省略時は期判定AIの値。
+ *              期判定AIの値から変更されていれば、読取後に案件の決算日をこの値にする。
+ *              変更されていなければ、読取AIが書類から読んだ決算日をそのまま使い、
+ *              期判定AIの値と照合する（bulk_analyze.php の 4.5 / 7 を参照）。
  *
  * 返却:
  *   { status:"success", batch_id, approved:n, skipped:n, batch_status:"APPROVED" }
@@ -94,8 +95,8 @@ foreach ($rows as $r) {
         bulk_error('#' . $seq . ' の期区分が未指定です。確認画面で指定してください。', 400);
     }
 
-    // 人が確認した決算日。照合の「正」になる。
-    // 送られてこなければ期判定AIの値をそのまま採用し、空文字なら照合しない。
+    // 担当者が確認した決算日。期判定AIの値から変わっていれば、読取後に案件へ反映する。
+    // 送られてこなければ期判定AIの値をそのまま採用する（＝変更なし）。
     if (array_key_exists('end_date', $o)) {
         $raw = trim((string)$o['end_date']);
         $endDate = bulk_parse_date($raw);

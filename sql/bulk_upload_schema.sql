@@ -47,9 +47,9 @@ CREATE TABLE IF NOT EXISTS bulk_batch_files (
     detected_labels VARCHAR(128)          DEFAULT NULL COMMENT '例: 今期,前期',
     detected_years  VARCHAR(128)          DEFAULT NULL COMMENT '例: 令和7年度,令和6年度',
     detected_end_date  DATE               DEFAULT NULL COMMENT '期判定AIが読んだ、このファイルの最新期の決算日',
-    confirmed_end_date DATE               DEFAULT NULL COMMENT '確認画面で人が確定した決算日（照合の正）',
+    confirmed_end_date DATE               DEFAULT NULL COMMENT '確認画面で担当者が確定した決算日。期判定AIの値から変更されていれば案件の決算日に採用',
     read_end_date      DATE               DEFAULT NULL COMMENT '読取AIが書類から読んだ今期決算日（ai_case.closing_date）',
-    end_date_check     VARCHAR(8)         DEFAULT NULL COMMENT '読取後の決算日の照合 MATCH/MISMATCH/SKIP',
+    end_date_check     VARCHAR(8)         DEFAULT NULL COMMENT '読取後の決算日 USER=担当者の値を採用 / MATCH・MISMATCH・SKIP=読取の値を採用',
     detect_reason   TEXT                  DEFAULT NULL COMMENT 'AIの判定根拠',
 
     -- 整合チェック

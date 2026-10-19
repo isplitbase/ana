@@ -76,9 +76,10 @@ const BULK_F_SKIPPED   = 'SKIPPED';   // ユーザーが確認画面で除外し
 
 /** 読取後の決算日の照合（人が確認した決算日 と 読取AIが書類から読んだ決算日）
  *  読取そのものの成否とは別に記録する。食い違っても解析結果は残し、要確認として示す。 */
-const BULK_EDC_MATCH    = 'MATCH';     // 一致
-const BULK_EDC_MISMATCH = 'MISMATCH';  // 食い違い（要確認）
-const BULK_EDC_SKIP     = 'SKIP';      // どちらかが空で照合できない
+const BULK_EDC_MATCH    = 'MATCH';     // 一致（読取の決算日を採用）
+const BULK_EDC_MISMATCH = 'MISMATCH';  // 食い違い（読取の決算日を採用。要確認）
+const BULK_EDC_USER     = 'USER';      // 担当者が決算日を変更した（担当者の決算日を採用）
+const BULK_EDC_SKIP     = 'SKIP';      // どちらかが空で照合できない（読取の決算日を採用）
 
 // ─────────────────────────────────────────
 // 応答
@@ -346,6 +347,29 @@ function bulk_parse_date(?string $text): ?string {
     }
     if ($y === null || !checkdate($m, $d, $y)) { return null; }
     return sprintf('%04d-%02d-%02d', $y, $m, $d);
+}
+
+/**
+ * Y-m-d を、読取AIが ai_case.closing_date に書く形（2025年05月31日）にする。
+ * 画面や CF 分析（cash_ai.php）はこの形の文字列を受け取っているため、書き換えるときもそろえる。
+ */
+function bulk_jp_date(string $ymd): string {
+    [$y, $m, $d] = array_map('intval', explode('-', $ymd));
+    return sprintf('%04d年%02d月%02d日', $y, $m, $d);
+}
+
+/**
+ * Y-m-d を n 年ずらす。月末の日付は、ずらした先でも月末にする。
+ * （2024-02-29 の1年前は 2023-02-28。DateTime の modify だと 2023-03-01 になってしまう）
+ */
+function bulk_shift_years(string $ymd, int $years): string {
+    [$y, $m, $d] = array_map('intval', explode('-', $ymd));
+    $daysIn = function (int $yy, int $mm): int { return (int)date('t', mktime(0, 0, 0, $mm, 1, $yy)); };
+    $isMonthEnd = ($d === $daysIn($y, $m));
+    $ny = $y + $years;
+    $last = $daysIn($ny, $m);
+    $nd = $isMonthEnd ? $last : min($d, $last);
+    return sprintf('%04d-%02d-%02d', $ny, $m, $nd);
 }
 
 /**
