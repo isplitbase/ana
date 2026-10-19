@@ -290,3 +290,49 @@ function bulk_copy_gcs(string $srcUri, string $dstObject, string $bucketName): s
     $srcBucket->object($m[2])->copy($storage->bucket($bucketName), ['name' => ltrim($dstObject, '/')]);
     return "gs://{$bucketName}/" . ltrim($dstObject, '/');
 }
+
+/**
+ * 未処理のファイルを1件だけロックして取り出す（並列ワーカー用）。
+ *
+ * PHP には並行処理が無いため、同じワーカーを複数本起動して
+ * 1件ずつ奪い合う形で並列化する。UPDATE の affected_rows で
+ * 取得できたかを判定するので、同じファイルを2本が処理することはない。
+ *
+ * @param string $from   取り出す対象の状態（RECEIVED / APPROVED）
+ * @param string $to     取得後に立てる状態（DETECTING / ANALYZING）
+ * @return array|null    取得できた1行。無ければ null
+ */
+function bulk_claim_file(mysqli $conn, string $batchId, string $from, string $to): ?array {
+    $pid = getmypid();
+    $bid = $conn->real_escape_string($batchId);
+
+    // worker_pid 列で「誰が掴んだか」を記録する。
+    $conn->query(
+        "UPDATE bulk_batch_files
+            SET status = '" . $conn->real_escape_string($to) . "',
+                worker_pid = {$pid},
+                update_at = now()
+          WHERE batch_id = '{$bid}'
+            AND status = '" . $conn->real_escape_string($from) . "'
+          ORDER BY seq
+          LIMIT 1"
+    );
+    if ($conn->affected_rows < 1) { return null; }
+
+    $res = $conn->query(
+        "SELECT * FROM bulk_batch_files
+          WHERE batch_id = '{$bid}' AND worker_pid = {$pid}
+            AND status = '" . $conn->real_escape_string($to) . "'
+          ORDER BY update_at DESC LIMIT 1"
+    );
+    return $res ? $res->fetch_assoc() : null;
+}
+
+/** 指定状態のファイルが残っているかを数える */
+function bulk_count_files(mysqli $conn, string $batchId, array $statuses): int {
+    $bid = $conn->real_escape_string($batchId);
+    $in  = implode("','", array_map(fn($s) => $conn->real_escape_string($s), $statuses));
+    $r = $conn->query("SELECT COUNT(*) AS c FROM bulk_batch_files
+                        WHERE batch_id = '{$bid}' AND status IN ('{$in}')");
+    return (int)($r ? $r->fetch_assoc()['c'] : 0);
+}

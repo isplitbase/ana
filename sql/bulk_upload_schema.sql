@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS bulk_batch_files (
     gcs_path        VARCHAR(1024) NOT NULL COMMENT 'gs://analygent/bulk/<batch_id>/<seq>.pdf',
     size_bytes      BIGINT                DEFAULT NULL,
     status          VARCHAR(16)  NOT NULL COMMENT 'RECEIVED/DETECTING/DETECTED/APPROVED/ANALYZING/DONE/ERROR/SKIPPED',
+    worker_pid      INT                   DEFAULT NULL COMMENT '処理中のワーカーPID（並列制御）',
 
     -- 自動判定（ana-getpdfinfo の戻り値）
     posting_period  VARCHAR(4)            DEFAULT NULL COMMENT 'P1/P2/P3',
@@ -56,5 +57,6 @@ CREATE TABLE IF NOT EXISTS bulk_batch_files (
     PRIMARY KEY (id),
     UNIQUE KEY uk_batch_seq (batch_id, seq),
     KEY idx_batch_status (batch_id, status),
+    KEY idx_claim (batch_id, status, seq),
     KEY idx_ai_case (ai_case_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='まとめてアップロードの明細（1行=1ファイル=1案件）';

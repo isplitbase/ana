@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>まとめてアップロード 動作確認</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#fff; --line:#dfe3e8; --text:#1f2933; --muted:#6b7280;
+    --accent:#1f4e79; --ok:#2e7d32; --warn:#b8860b; --ng:#c62828;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font-family:"Segoe UI","Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif;font-size:14px;line-height:1.7}
+  .wrap{max-width:1040px;margin:0 auto;padding:24px 16px 64px}
+  h1{font-size:20px;margin:0 0 4px}
+  .lead{color:var(--muted);margin:0 0 20px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:16px}
+  .panel h2{font-size:15px;margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+  label{min-width:88px;color:var(--muted)}
+  input[type=text],input[type=password],select{
+    padding:7px 10px;border:1px solid var(--line);border-radius:5px;font-size:14px;background:#fff}
+  input[type=text],input[type=password]{min-width:280px}
+  button{padding:8px 16px;border:0;border-radius:5px;background:var(--accent);color:#fff;
+         font-size:14px;cursor:pointer}
+  button:disabled{background:#9aa5b1;cursor:not-allowed}
+  button.sub{background:#5a6b7d}
+  button.ghost{background:#fff;color:var(--accent);border:1px solid var(--accent)}
+  .hint{color:var(--muted);font-size:12.5px;margin-top:6px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+  th{background:#eef1f5;font-weight:600;white-space:nowrap}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .bar{height:8px;background:#e5e7eb;border-radius:4px;overflow:hidden;margin:8px 0}
+  .bar>i{display:block;height:100%;background:var(--accent);width:0;transition:width .3s}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:12px;border:1px solid}
+  .tag.ok{color:var(--ok);border-color:var(--ok);background:#eaf5ea}
+  .tag.warn{color:var(--warn);border-color:var(--warn);background:#fdf6e3}
+  .tag.ng{color:var(--ng);border-color:var(--ng);background:#fdeaea}
+  .tag.plain{color:var(--muted);border-color:var(--line)}
+  #log{background:#1f2933;color:#d7dde4;border-radius:6px;padding:10px 12px;
+       font-family:Consolas,"SFMono-Regular",monospace;font-size:12.5px;
+       height:220px;overflow:auto;white-space:pre-wrap;word-break:break-all}
+  .env-prod{background:#fdeaea;border-color:#f5b5b5}
+  .steps{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+  .steps span{padding:3px 10px;border:1px solid var(--line);border-radius:14px;
+              background:#fff;color:var(--muted);font-size:12.5px}
+  .steps span.done{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .steps span.now{border-color:var(--accent);color:var(--accent);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>まとめてアップロード 動作確認</h1>
+  <p class="lead">
+    大量ファイルの一括投入APIを、開発(8056)・本番(8012)の両方に対して試すための画面です。
+    正式な画面ではなく、バックエンドの疎通と挙動を確かめる目的で用意しています。
+  </p>
+
+  <!-- ① 接続設定 -->
+  <div class="panel" id="panelEnv">
+    <h2>① 接続先とログイン</h2>
+    <div class="row">
+      <label for="env">接続先</label>
+      <select id="env">
+        <option value="8056" selected>開発（8056 / dbtest1）</option>
+        <option value="8012">本番（8012 / dbwindow）</option>
+      </select>
+      <span class="hint" id="envNote">開発環境に接続します。</span>
+    </div>
+    <div class="row">
+      <label for="loginkey">loginkey</label>
+      <input type="text" id="loginkey" placeholder="ログイン済みの loginkey を貼り付け">
+      <button class="ghost" id="btnCheck">接続確認</button>
+    </div>
+    <p class="hint">
+      loginkey は、通常の画面にログインした状態で取得できる値です。
+      ブラウザの開発者ツール（Network）で API リクエストの本文から確認できます。
+    </p>
+  </div>
+
+  <!-- ② ファイル選択 -->
+  <div class="panel">
+    <h2>② ファイルを選ぶ</h2>
+    <div class="row">
+      <label for="mode">確認方式</label>
+      <select id="mode">
+        <option value="B" selected>B：ファイル単位で確認（一覧表）</option>
+        <option value="A">A：ページ単位で確認</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="files">PDF</label>
+      <input type="file" id="files" accept="application/pdf" multiple>
+    </div>
+    <p class="hint">
+      複数選択できます。送信は <b>3本ずつ</b> に分割されます
+      （PHP の max_file_uploads=20 の制限により、まとめて送ると21本目以降が無言で失われるため）。
+    </p>
+    <div class="row">
+      <button id="btnStart">アップロード開始</button>
+      <span id="fileCount" class="hint"></span>
+    </div>
+  </div>
+
+  <!-- ③ 進捗 -->
+  <div class="panel">
+    <h2>③ 進捗</h2>
+    <div class="steps" id="steps">
+      <span data-s="OPEN">受付</span>
+      <span data-s="QUEUED">順番待ち</span>
+      <span data-s="DETECTING">期判定</span>
+      <span data-s="REVIEW">確認待ち</span>
+      <span data-s="APPROVED">承認済み</span>
+      <span data-s="ANALYZING">解析中</span>
+      <span data-s="DONE">完了</span>
+    </div>
+    <div class="row">
+      <span>バッチID：<b id="batchId">—</b></span>
+      <span>状態：<b id="batchStatus">—</b></span>
+      <span id="counts" class="hint"></span>
+    </div>
+    <div class="bar"><i id="barFill"></i></div>
+    <div class="row">
+      <button class="sub" id="btnPoll">進捗を更新</button>
+      <label style="min-width:auto"><input type="checkbox" id="autoPoll" checked> 5秒ごとに自動更新</label>
+    </div>
+  </div>
+
+  <!-- ④ 確認と承認 -->
+  <div class="panel">
+    <h2>④ 内容を確認して承認</h2>
+    <div class="row">
+      <button class="sub" id="btnReview">確認データを取得</button>
+      <label style="min-width:auto"><input type="checkbox" id="onlyWarn"> 要確認のものだけ表示</label>
+      <button id="btnApprove" disabled>承認して解析を開始</button>
+    </div>
+    <div id="reviewArea"><p class="hint">期判定が終わると表示できます。</p></div>
+  </div>
+
+  <!-- ⑤ ログ -->
+  <div class="panel">
+    <h2>⑤ 通信ログ</h2>
+    <div id="log"></div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var $ = function (id) { return document.getElementById(id); };
+  var state = { batchId: null, mode: 'B', files: [], timer: null, review: null };
+
+  // ---- 接続先 --------------------------------------------------------
+  // この画面は 8056 の DocumentRoot 配下に置くが、8012 のAPIも叩けるようにする。
+  function base() {
+    return location.protocol + '//' + location.hostname + ':' + $('env').value + '/sapis/';
+  }
+
+  function log(msg, kind) {
+    var el = $('log');
+    var t = new Date().toTimeString().slice(0, 8);
+    var mark = kind === 'err' ? '✗' : (kind === 'ok' ? '✓' : '·');
+    el.textContent += '[' + t + '] ' + mark + ' ' + msg + '\n';
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function api(path, opts) {
+    var url = base() + path;
+    return fetch(url, opts).then(function (r) {
+      return r.text().then(function (txt) {
+        var j = null;
+        try { j = JSON.parse(txt); } catch (e) { /* JSONでない場合はそのまま */ }
+        if (!r.ok) {
+          var m = (j && j.message) ? j.message : txt.slice(0, 200);
+          throw new Error('HTTP ' + r.status + ' : ' + m);
+        }
+        return j !== null ? j : txt;
+      });
+    });
+  }
+
+  // ---- 環境切替 ------------------------------------------------------
+  $('env').addEventListener('change', function () {
+    var prod = this.value === '8012';
+    $('panelEnv').classList.toggle('env-prod', prod);
+    $('envNote').textContent = prod
+      ? '本番環境に接続します。実データが作成されるためご注意ください。'
+      : '開発環境に接続します。';
+    log('接続先を ' + base() + ' に変更しました');
+  });
+
+  $('btnCheck').addEventListener('click', function () {
+    var lk = $('loginkey').value.trim();
+    if (!lk) { log('loginkey を入力してください', 'err'); return; }
+    // 存在しないバッチIDを問い合わせ、認証が通るかだけを見る
+    api('bulk_upload_status.php?loginkey=' + encodeURIComponent(lk) + '&batch_id=000000-00')
+      .then(function () { log('接続OK（認証は通りました）', 'ok'); })
+      .catch(function (e) {
+        var m = String(e.message);
+        if (m.indexOf('見つかりません') >= 0) log('接続OK（認証は通りました）', 'ok');
+        else log('接続失敗: ' + m, 'err');
+      });
+  });
+
+  // ---- ファイル選択 --------------------------------------------------
+  $('files').addEventListener('change', function () {
+    state.files = Array.prototype.slice.call(this.files);
+    $('fileCount').textContent = state.files.length
+      ? state.files.length + ' 件を選択（' + Math.ceil(state.files.length / 3) + ' 回に分けて送信）'
+      : '';
+  });
+
+  // ---- アップロード --------------------------------------------------
+  $('btnStart').addEventListener('click', function () {
+    var lk = $('loginkey').value.trim();
+    if (!lk) { log('loginkey を入力してください', 'err'); return; }
+    if (!state.files.length) { log('PDFを選択してください', 'err'); return; }
+
+    var btn = this; btn.disabled = true;
+    state.mode = $('mode').value;
+
+    log('--- 開始: ' + state.files.length + ' 件 / 接続先 ' + base() + ' ---');
+
+    api('bulk_upload_init.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ loginkey: lk, mode: state.mode })
+    })
+    .then(function (r) {
+      state.batchId = r.batch_id;
+      $('batchId').textContent = r.batch_id;
+      log('バッチ開始: ' + r.batch_id + '（1回 ' + r.files_per_request + ' 本・上限 ' + r.max_files + ' 本）', 'ok');
+      return sendChunks(lk, r.files_per_request || 3);
+    })
+    .then(function () {
+      return api('bulk_upload_close.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ loginkey: lk, batch_id: state.batchId })
+      });
+    })
+    .then(function (r) {
+      log('受付を締め切りました（' + r.total_files + ' 件）。処理の順番を待ちます。', 'ok');
+      startPolling();
+    })
+    .catch(function (e) { log(e.message, 'err'); })
+    .then(function () { btn.disabled = false; });
+  });
+
+  function sendChunks(lk, per) {
+    var chunks = [];
+    for (var i = 0; i < state.files.length; i += per) {
+      chunks.push(state.files.slice(i, i + per));
+    }
+    var idx = 0;
+    function next() {
+      if (idx >= chunks.length) return Promise.resolve();
+      var c = chunks[idx++];
+      var fd = new FormData();
+      fd.append('loginkey', lk);
+      fd.append('batch_id', state.batchId);
+      c.forEach(function (f, i) { fd.append('file' + (i + 1), f, f.name); });
+      return api('bulk_upload_add.php', { method: 'POST', body: fd })
+        .then(function (r) {
+          log('送信 ' + idx + '/' + chunks.length + '：受領 ' + r.accepted.length +
+              ' 件' + (r.skipped.length ? ' / 除外 ' + r.skipped.length + ' 件' : '') +
+              '（累計 ' + r.total_files + ' 件）');
+          (r.skipped || []).forEach(function (s) { log('  除外: ' + s.name + ' — ' + s.reason, 'err'); });
+          return next();
+        });
+    }
+    return next();
+  }
+
+  // ---- 進捗 ----------------------------------------------------------
+  function startPolling() {
+    stopPolling();
+    poll();
+    if ($('autoPoll').checked) state.timer = setInterval(poll, 5000);
+  }
+  function stopPolling() { if (state.timer) { clearInterval(state.timer); state.timer = null; } }
+
+  $('autoPoll').addEventListener('change', function () {
+    if (this.checked && state.batchId) startPolling(); else stopPolling();
+  });
+  $('btnPoll').addEventListener('click', poll);
+
+  function poll() {
+    if (!state.batchId) { log('バッチがまだありません', 'err'); return; }
+    var lk = $('loginkey').value.trim();
+    api('bulk_upload_status.php?loginkey=' + encodeURIComponent(lk) + '&batch_id=' + state.batchId)
+      .then(function (r) {
+        $('batchStatus').textContent = r.batch_status;
+        $('counts').textContent = '完了 ' + r.done_files + ' / ' + r.total_files +
+                                  (r.error_files ? '　失敗 ' + r.error_files : '');
+        $('barFill').style.width = (r.progress_percent || 0) + '%';
+        markSteps(r.batch_status);
+        if (r.batch_status === 'REVIEW') {
+          log('期判定が終わりました。内容を確認してください。', 'ok');
+          stopPolling();
+          loadReview();
+        }
+        if (r.batch_status === 'DONE' || r.batch_status === 'ERROR') {
+          log('処理が終わりました（' + r.batch_status + '）: ' + (r.message || ''), 'ok');
+          stopPolling();
+        }
+      })
+      .catch(function (e) { log(e.message, 'err'); stopPolling(); });
+  }
+
+  function markSteps(cur) {
+    var order = ['OPEN','QUEUED','DETECTING','REVIEW','APPROVED','ANALYZING','DONE'];
+    var ci = order.indexOf(cur);
+    Array.prototype.forEach.call($('steps').children, function (el) {
+      var i = order.indexOf(el.getAttribute('data-s'));
+      el.className = (ci >= 0 && i < ci) ? 'done' : (i === ci ? 'now' : '');
+    });
+  }
+
+  // ---- 確認と承認 ----------------------------------------------------
+  $('btnReview').addEventListener('click', loadReview);
+  $('onlyWarn').addEventListener('change', loadReview);
+
+  function loadReview() {
+    if (!state.batchId) { log('バッチがまだありません', 'err'); return; }
+    var lk = $('loginkey').value.trim();
+    var q = 'bulk_upload_review.php?loginkey=' + encodeURIComponent(lk) +
+            '&batch_id=' + state.batchId + '&mode=' + state.mode +
+            ($('onlyWarn').checked ? '&only=warn' : '');
+    api(q).then(function (r) {
+      state.review = r;
+      renderReview(r);
+      $('btnApprove').disabled = (r.batch_status !== 'REVIEW');
+      log('確認データ取得: 全' + r.summary.total + ' 件（OK ' + r.summary.ok +
+          ' / 要確認 ' + r.summary.warn + ' / NG ' + r.summary.ng +
+          ' / 失敗 ' + r.summary.error + '）', 'ok');
+    }).catch(function (e) { log(e.message, 'err'); });
+  }
+
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function renderReview(r) {
+    if (!r.files.length) {
+      $('reviewArea').innerHTML = '<p class="hint">対象がありません。</p>';
+      return;
+    }
+    var h = '<table><thead><tr>' +
+      '<th>#</th><th>ファイル名</th><th>期区分</th><th>判定</th><th>年度</th>' +
+      '<th>チェック</th><th>含める</th></tr></thead><tbody>';
+    r.files.forEach(function (f) {
+      var cls = f.check_result === 'OK' ? 'ok' : (f.check_result === 'NG' ? 'ng' :
+                (f.check_result ? 'warn' : 'plain'));
+      h += '<tr>' +
+        '<td class="num">' + f.seq + '</td>' +
+        '<td>' + esc(f.name) + (f.error_message ? '<br><span class="tag ng">' + esc(f.error_message) + '</span>' : '') + '</td>' +
+        '<td><select data-seq="' + f.seq + '" class="pp">' +
+          ['P1','P2','P3'].map(function (p) {
+            return '<option value="' + p + '"' + (f.posting_period === p ? ' selected' : '') + '>' + p + '</option>';
+          }).join('') + '</select></td>' +
+        '<td>' + esc((f.detected_labels || []).join(' / ')) + '</td>' +
+        '<td>' + esc((f.detected_years || []).join(' / ')) + '</td>' +
+        '<td><span class="tag ' + cls + '">' + esc(f.check_result || '—') + '</span>' +
+            (f.check_message ? '<br><span class="hint">' + esc(f.check_message) + '</span>' : '') + '</td>' +
+        '<td><input type="checkbox" class="inc" data-seq="' + f.seq + '"' +
+            (f.suggested && f.suggested.include ? ' checked' : '') + '></td>' +
+        '</tr>';
+    });
+    h += '</tbody></table>';
+    h += '<p class="hint">期区分：P1＝今期のみ／P2＝今期+前期／P3＝前期+前々期</p>';
+    $('reviewArea').innerHTML = h;
+  }
+
+  $('btnApprove').addEventListener('click', function () {
+    if (!state.batchId) return;
+    var lk = $('loginkey').value.trim();
+    var files = [];
+    Array.prototype.forEach.call(document.querySelectorAll('.inc'), function (cb) {
+      var seq = Number(cb.getAttribute('data-seq'));
+      var sel = document.querySelector('.pp[data-seq="' + seq + '"]');
+      files.push({ seq: seq, include: cb.checked, posting_period: sel ? sel.value : null });
+    });
+    var inc = files.filter(function (f) { return f.include; }).length;
+    if (!inc) { log('承認する対象がありません', 'err'); return; }
+    if (!confirm(inc + ' 件を承認して解析を開始します。よろしいですか？')) return;
+
+    this.disabled = true;
+    api('bulk_upload_approve.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ loginkey: lk, batch_id: state.batchId, files: files })
+    })
+    .then(function (r) {
+      log('承認: ' + r.approved + ' 件（除外 ' + r.skipped + ' 件）。解析を待ちます。', 'ok');
+      startPolling();
+    })
+    .catch(function (e) { log(e.message, 'err'); })
+    .then(function () { $('btnApprove').disabled = false; }.bind(this));
+  });
+
+  log('準備完了。接続先と loginkey を設定してください。');
+})();
+</script>
+</body>
+</html>

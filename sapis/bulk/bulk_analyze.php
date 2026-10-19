@@ -220,29 +220,26 @@ function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun)
         return;
     }
 
-    $res = $conn->query(
-        "SELECT * FROM bulk_batch_files
-          WHERE batch_id = '" . $conn->real_escape_string($batchId) . "'
-            AND status IN ('" . BULK_F_APPROVED . "','" . BULK_F_ANALYZING . "')
-          ORDER BY seq"
-    );
-    $targets = $res->fetch_all(MYSQLI_ASSOC);
-    bulk_log("ANALYZE START batch_id={$batchId} files=" . count($targets));
+    $remain = bulk_count_files($conn, $batchId, [BULK_F_APPROVED, BULK_F_ANALYZING]);
+    bulk_log("ANALYZE START batch_id={$batchId} files={$remain}");
 
     if ($dryRun) {
-        foreach ($targets as $t) { echo "  [dry-run] #{$t['seq']} case={$t['ai_case_id']}\n"; }
+        $res = $conn->query("SELECT seq, ai_case_id FROM bulk_batch_files
+                              WHERE batch_id = '" . $conn->real_escape_string($batchId) . "'
+                                AND status IN ('" . BULK_F_APPROVED . "','" . BULK_F_ANALYZING . "')
+                              ORDER BY seq");
+        while ($t = $res->fetch_assoc()) { echo "  [dry-run] #{$t['seq']} case={$t['ai_case_id']}\n"; }
         return;
     }
 
-    foreach ($targets as $t) {
+    // 1件ずつロックして取り出す（複数ワーカーで並列実行できるようにするため）
+    while (($t = bulk_claim_file($conn, $batchId, BULK_F_APPROVED, BULK_F_ANALYZING)) !== null) {
         $id       = (int)$t['id'];
         $aiCaseId = (int)$t['ai_case_id'];
         if ($aiCaseId <= 0) {
             bulk_update_file($conn, $id, ['status' => BULK_F_ERROR, 'error_message' => '案件が作られていません']);
             continue;
         }
-
-        bulk_update_file($conn, $id, ['status' => BULK_F_ANALYZING]);
 
         // ── 案件を取得 ──
         $r = $conn->query("SELECT * FROM ai_case WHERE ai_case_id = {$aiCaseId}");
@@ -313,6 +310,12 @@ function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun)
 
     // ── 締め ──
     bulk_refresh_counts($conn, $batchId);
+
+    // 未処理が残っていれば、他のワーカーがまだ解析中。状態は変えない。
+    if (bulk_count_files($conn, $batchId, [BULK_F_APPROVED, BULK_F_ANALYZING]) > 0) {
+        bulk_log("ANALYZE PARTIAL batch_id={$batchId}（他のワーカーが処理中）");
+        return;
+    }
     $r = $conn->query("SELECT COUNT(*) AS err FROM bulk_batch_files
                         WHERE batch_id = '" . $conn->real_escape_string($batchId) . "'
                           AND status = '" . BULK_F_ERROR . "'");

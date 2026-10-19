@@ -48,25 +48,27 @@ $dryRun    = array_key_exists('dry-run', $opts);
 // 対象バッチを1つ取り出してロックする
 // ─────────────────────────────────────────
 function bulk_claim_batch(mysqli $conn, ?string $onlyBatch): ?array {
-    $pid = getmypid();
-
-    $where = "status IN ('" . BULK_ST_QUEUED . "','" . BULK_ST_APPROVED . "')
-              AND (locked_at IS NULL OR locked_at < DATE_SUB(now(), INTERVAL " . BULK_LOCK_TIMEOUT . " SECOND))";
+    // 複数ワーカーが同じバッチに同時参加できるようにする
+    //
+    // 以前はバッチ単位でロックしていたが、それだと先に起動した1本が
+    // バッチを占有し、残りのワーカーが何も取れず並列にならなかった。
+    // バッチはロックせず「処理対象として選ぶ」だけにして、
+    // 実際の排他は bulk_claim_file()（ファイル単位）で行う。
+    $where = "status IN ('" . BULK_ST_QUEUED . "','" . BULK_ST_DETECTING . "','"
+             . BULK_ST_APPROVED . "','" . BULK_ST_ANALYZING . "')";
     if ($onlyBatch !== null) {
         $where .= " AND batch_id = '" . $conn->real_escape_string($onlyBatch) . "'";
     }
 
-    // 1行だけロックを取る。取れた行数で競合を判定する。
-    $sql = "UPDATE bulk_batches
-               SET worker_pid = {$pid}, locked_at = now(), update_at = now()
-             WHERE {$where}
-             ORDER BY create_at
-             LIMIT 1";
-    $conn->query($sql);
-    if ($conn->affected_rows < 1) { return null; }
+    $res = $conn->query("SELECT * FROM bulk_batches WHERE {$where} ORDER BY create_at LIMIT 1");
+    $batch = $res ? $res->fetch_assoc() : null;
+    if (!$batch) { return null; }
 
-    $res = $conn->query("SELECT * FROM bulk_batches WHERE worker_pid = {$pid} ORDER BY locked_at DESC LIMIT 1");
-    return $res ? $res->fetch_assoc() : null;
+    // 最後に触ったワーカーを記録する（進捗確認用。排他には使わない）
+    $pid = getmypid();
+    $conn->query("UPDATE bulk_batches SET worker_pid = {$pid}, locked_at = now()
+                   WHERE batch_id = '" . $conn->real_escape_string($batch['batch_id']) . "'");
+    return $batch;
 }
 
 function bulk_release(mysqli $conn, string $batchId): void {
@@ -85,15 +87,15 @@ function bulk_phase_detect(mysqli $conn, array $batch, int $port, bool $dryRun):
         'message' => '帳票の期を判定しています。',
     ]);
 
-    $res = $conn->query("SELECT * FROM bulk_batch_files
-                          WHERE batch_id = '" . $conn->real_escape_string($batchId) . "'
-                            AND status IN ('" . BULK_F_RECEIVED . "','" . BULK_F_DETECTING . "')
-                          ORDER BY seq");
-    $targets = $res->fetch_all(MYSQLI_ASSOC);
-    bulk_log("DETECT START batch_id={$batchId} files=" . count($targets));
+    $remain = bulk_count_files($conn, $batchId, [BULK_F_RECEIVED, BULK_F_DETECTING]);
+    bulk_log("DETECT START batch_id={$batchId} files={$remain}");
 
     if ($dryRun) {
-        foreach ($targets as $t) { echo "  [dry-run] #{$t['seq']} {$t['original_name']}\n"; }
+        $res = $conn->query("SELECT seq, original_name FROM bulk_batch_files
+                              WHERE batch_id = '" . $conn->real_escape_string($batchId) . "'
+                                AND status IN ('" . BULK_F_RECEIVED . "','" . BULK_F_DETECTING . "')
+                              ORDER BY seq");
+        while ($t = $res->fetch_assoc()) { echo "  [dry-run] #{$t['seq']} {$t['original_name']}\n"; }
         return;
     }
 
@@ -106,9 +108,9 @@ function bulk_phase_detect(mysqli $conn, array $batch, int $port, bool $dryRun):
         $seen[$d['original_name'] . '|' . $d['detected_years']] = (int)$d['seq'];
     }
 
-    foreach ($targets as $t) {
+    // 1件ずつロックして取り出す（複数ワーカーで並列実行できるようにするため）
+    while (($t = bulk_claim_file($conn, $batchId, BULK_F_RECEIVED, BULK_F_DETECTING)) !== null) {
         $id = (int)$t['id'];
-        bulk_update_file($conn, $id, ['status' => BULK_F_DETECTING]);
 
         $r = bulk_detect_period($t['gcs_path'], $t['original_name'], $port);
 
@@ -142,6 +144,13 @@ function bulk_phase_detect(mysqli $conn, array $batch, int $port, bool $dryRun):
     }
 
     bulk_refresh_counts($conn, $batchId);
+
+    // 未処理が残っていれば、他のワーカーがまだ処理中。状態は変えない。
+    if (bulk_count_files($conn, $batchId, [BULK_F_RECEIVED, BULK_F_DETECTING]) > 0) {
+        bulk_log("DETECT PARTIAL batch_id={$batchId}（他のワーカーが処理中）");
+        return;
+    }
+
     bulk_update_batch($conn, $batchId, [
         'status'  => BULK_ST_REVIEW,
         'message' => '判定が終わりました。内容をご確認ください。',
