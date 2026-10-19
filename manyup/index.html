@@ -156,9 +156,15 @@
   var state = { batchId: null, mode: 'B', files: [], timer: null, review: null };
 
   // ---- 接続先 --------------------------------------------------------
-  // この画面は 8056 の DocumentRoot 配下に置くが、8012 のAPIも叩けるようにする。
+  // この画面は 8012 / 8056 どちらの DocumentRoot 配下に置いても動く。
+  // common.php が Access-Control-Allow-Origin: * を返すため、
+  // 8056 の画面から 8012 のAPIを叩くこともできる。
   function base() {
     return location.protocol + '//' + location.hostname + ':' + $('env').value + '/sapis/';
+  }
+
+  function envLabel() {
+    return $('env').value === '8012' ? '本番(8012 / dbwindow)' : '開発(8056 / dbtest1)';
   }
 
   function log(msg, kind) {
@@ -203,6 +209,12 @@
       .catch(function (e) {
         var m = String(e.message);
         if (m.indexOf('見つかりません') >= 0) log('接続OK（認証は通りました）', 'ok');
+        else if (m.indexOf('異常アクセス') >= 0) {
+          log('接続失敗: ' + m, 'err');
+          log('この loginkey は' + envLabel() + 'のDBに存在しません。'
+            + '8012(dbwindow) と 8056(dbtest1) はDBが別です。'
+            + '接続先と同じポートの画面でログインして取得した loginkey を使ってください。', 'err');
+        }
         else log('接続失敗: ' + m, 'err');
       });
   });
@@ -405,7 +417,18 @@
     .then(function () { $('btnApprove').disabled = false; }.bind(this));
   });
 
-  log('準備完了。接続先と loginkey を設定してください。');
+  // ---- 初期化 --------------------------------------------------------
+  // 接続先の初期値は、この画面が配信されているポートに合わせる。
+  // loginkey は環境ごとに別DBのため、見ている画面と違う環境を既定にすると
+  // 必ず「異常アクセス」になってしまう。
+  (function initEnv() {
+    var p = location.port;
+    if (p !== '8012' && p !== '8056') return;   // それ以外はHTMLの既定値のまま
+    $('env').value = p;
+    $('env').dispatchEvent(new Event('change'));
+  })();
+
+  log('準備完了。接続先（' + envLabel() + '）と loginkey を設定してください。');
 })();
 </script>
 </body>

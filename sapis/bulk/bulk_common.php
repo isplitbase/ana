@@ -89,8 +89,10 @@ function bulk_log(string $message): void {
     // Web(www-data) と ワーカー(cron実行ユーザー) で書き込み先を分ける。
     // 同じファイルに追記しようとすると、先に作った側の所有になって
     // もう一方が Permission denied になり、ログが無言で消える。
+    // 8012(本番)/8056(開発) が同じログに混ざらないよう、ポートも入れる。
     $who  = (PHP_SAPI === 'cli') ? 'worker' : 'api';
-    $file = $logDir . '/bulk_' . $who . '_' . date('Ymd') . '.log';
+    $env  = (string)($GLOBALS['port'] ?? 'unknown');
+    $file = $logDir . '/bulk_' . $env . '_' . $who . '_' . date('Ymd') . '.log';
 
     $line = '[' . date('Y-m-d H:i:s') . '] ' . $message . PHP_EOL;
     if (@file_put_contents($file, $line, FILE_APPEND) === false) {
