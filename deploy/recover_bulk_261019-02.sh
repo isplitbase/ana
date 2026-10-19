@@ -36,18 +36,23 @@ while ($x = $r->fetch_assoc()) {
     printf("  #%02d %-10s case=%-7s 案件=%s\n", $x['seq'], $x['status'], $x['ai_case_id'] ?? '-', $x['cs'] ?? '-');
 }
 
-// やり直す対象:
-//   ・案件が AIOK/FNOK/FNST 以外（＝読取できていない）
-//   ・まだ ANALYZING のまま残っている
-// 成功済みのものは触らない。
-$conn->query("UPDATE bulk_batch_files f
-                JOIN ai_case a ON a.ai_case_id = f.ai_case_id
-                 SET f.status = '" . BULK_F_APPROVED . "',
-                     f.worker_pid = NULL,
-                     f.error_message = NULL,
-                     f.update_at = now()
-               WHERE f.batch_id = '{$bid}'
-                 AND a.status NOT IN ('AIOK','FNOK','FNST')");
+// やり直す対象: DONE になっていないものすべて。
+//
+// 案件の状態では判定しない。ワーカーが ERROR と記録した後に
+// 裏の Python が完走して AIOK になっている、という食い違いが
+// 起きるため（待たずに次へ進んでいたのが原因。修正済み）。
+// 確定(get_ai_response)が済んでいないものは、読取からやり直す。
+//
+// ユーザーが確認画面で除外した SKIPPED には触らない。
+$conn->query("UPDATE bulk_batch_files
+                 SET status = '" . BULK_F_APPROVED . "',
+                     worker_pid = NULL,
+                     error_message = NULL,
+                     update_at = now()
+               WHERE batch_id = '{$bid}'
+                 AND status IN ('" . BULK_F_ERROR . "','"
+                                   . BULK_F_ANALYZING . "','"
+                                   . BULK_F_APPROVED . "')");
 $n = $conn->affected_rows;
 echo "\nやり直し対象に戻しました: {$n} 件\n";
 
