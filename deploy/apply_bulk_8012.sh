@@ -89,4 +89,12 @@ echo "  https://corp.analygent.com:8012/manyup/"
 echo "を開いてください（接続先は自動で「本番」になります）。"
 echo
 echo "loginkey は 8012 の画面にログインして取得したものを使ってください。"
+echo "  ※ 8012(dbwindow) と 8056(dbtest1) はDBが別です。"
+echo
+echo "期判定と解析はワーカーが行います。cron は未登録のため、"
+echo "アップロード後に下記を実行してワーカーを起動してください。"
+echo "  $D12/sapis/bulk_cron.sh"
+echo
+echo "常時動かす場合は crontab に追記します（毎分）。"
+echo "  * * * * * $D12/sapis/bulk_cron.sh"
 echo "============================================================"
