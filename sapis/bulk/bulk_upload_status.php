@@ -56,7 +56,6 @@ $out = [
     'status'           => 'success',
     'batch_id'         => $batch_id,
     'batch_status'     => $batch['status'],
-    'mode'             => $batch['mode'],
     'total_files'      => $total,
     'done_files'       => $done,
     'error_files'      => (int)$batch['error_files'],

@@ -2,23 +2,16 @@
 /**
  * bulk_upload_review.php
  * ─────────────────────────────────────────────────────────────────────────────
- * 確認画面に出すデータを返す。A案 / B案 で返す粒度を変える。
+ * 確認画面に出すデータを返す。1ファイル1行の一覧で確認する。
  *
  * 受信 (GET または POST):
  *   loginkey : string 必須
  *   batch_id : string 必須
- *   mode     : "A" | "B"（省略時はバッチ作成時の mode）
  *
- * 返却（共通）:
- *   { status:"success", batch_id, mode, batch_status,
+ * 返却:
+ *   { status:"success", batch_id, batch_status,
  *     summary:{ total, ok, warn, ng, error },
  *     files:[ ... ] }
- *
- *   mode=B（ファイル単位）: files[] は1ファイル1行。確認は一覧表で行う想定。
- *   mode=A（ページ単位）  : 上記に加え各ファイルの pages[] を返す。
- *                           ただしページ画像は承認後の変換で作られるため、
- *                           この時点では pages は空になる。
- *                           （A案は「承認→変換後」に既存の確認画面を使う形になる）
  *
  * 備考:
  *   件数が多いときは check_result で絞り込める。
@@ -32,7 +25,6 @@ global $conn, $damy_flag;
 
 $loginkey = $_REQUEST['loginkey'] ?? null;
 $batch_id = $_REQUEST['batch_id'] ?? null;
-$modeReq  = strtoupper((string)($_REQUEST['mode'] ?? ''));
 $only     = strtolower((string)($_REQUEST['only'] ?? ''));   // '', 'warn', 'ng'
 
 if (empty($batch_id)) { bulk_error('batch_id が指定されていません。'); }
@@ -54,7 +46,6 @@ if ($user_id !== null) {
 }
 
 $batch = bulk_fetch_batch($conn, $batch_id, $company_id);
-$mode  = in_array($modeReq, [BULK_MODE_PAGE, BULK_MODE_FILE], true) ? $modeReq : $batch['mode'];
 
 // ── 明細 ──
 $sql = "SELECT seq, original_name, gcs_path, size_bytes, status, posting_period,
@@ -92,10 +83,6 @@ while ($r = $res->fetch_assoc()) {
             'include'        => ($r['status'] !== BULK_F_ERROR),
         ],
     ];
-    if ($mode === BULK_MODE_PAGE) {
-        // ページ画像は承認後の変換で生成されるため、この時点では空。
-        $row['pages'] = [];
-    }
     $files[] = $row;
 }
 $stmt->close();
@@ -118,7 +105,6 @@ $stmt->close();
 bulk_json([
     'status'       => 'success',
     'batch_id'     => $batch_id,
-    'mode'         => $mode,
     'batch_status' => $batch['status'],
     'summary'      => [
         'total' => (int)$s['total'],

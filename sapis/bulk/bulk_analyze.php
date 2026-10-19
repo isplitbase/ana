@@ -318,6 +318,13 @@ function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun)
     }
 
     // 1件ずつロックして取り出す
+    //
+    // 【1案件=1ファイル前提】ファイル単位で取り出し、そのファイルの案件を解析している。
+    // 複数ファイルを1案件にまとめると、同じ ai_case_id を持つ行が複数できるため、
+    // このままでは同じ案件を何度も解析してしまう。その場合は
+    //   ・取り出しを ai_case_id 単位にする（同じ案件の行をまとめて ANALYZING にする）
+    //   ・完了・失敗の記録も、同じ案件の行すべてに反映する
+    // 必要がある（README 参照）。
     while (($t = bulk_claim_file($conn, $batchId, BULK_F_APPROVED, BULK_F_ANALYZING)) !== null) {
         $id       = (int)$t['id'];
         $aiCaseId = (int)$t['ai_case_id'];

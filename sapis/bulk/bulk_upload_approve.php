@@ -99,39 +99,27 @@ foreach ($rows as $r) {
     }
 
     // ── ai_case を作る ──
-    // upload_file_keys は 1案件=1ファイルのため期区分に対応する1つだけ。
+    // 【1案件=1ファイル前提】1行（1ファイル）ごとに案件を1件作っている。
+    // 複数ファイルを1案件にする場合は、ここを case_group ごとのループに変え、
+    // 同じ組のファイルをまとめて bulk_create_case() に渡す（README 参照）。
+    //
+    // 【1案件=1ファイル前提】帳票キーを期区分から1つだけ決めている。
+    // 複数ファイルの場合は、ファイルごとに「どの期を含むか」から決める必要がある
+    // （例: 今期+前期 → currentAndPreviousBalanceSheet、
+    //       前期+前々期 → previousAndTwoAgoBalanceSheet）。
     $fileKey = ($period === 'P2') ? 'currentAndPreviousBalanceSheet'
              : (($period === 'P3') ? 'doublePreviousAndTwoAgoBalanceSheet'
              : 'currentTermBalanceSheet');
 
     $caseName = bulk_case_name($batch_id, $seq, $r['original_name']);
-    $status   = 'UPST';   // 既存フローと同じ「アップロード済み・変換待ち」
-
-    $stmt = $conn->prepare(
-        "INSERT INTO ai_case
-           (user_id, update_user_id, create_at, update_at, status, case_name,
-            upload_file_name, upload_file_keys, full_file_Paths)
-         VALUES (?, ?, now(), now(), ?, ?, ?, ?, ?)"
-    );
-    $stmt->bind_param('iisssss', $user_id, $user_id, $status, $caseName,
-                      $r['original_name'], $fileKey, $r['gcs_path']);
-    $stmt->execute();
-    $aiCaseId = (int)$conn->insert_id;
-    $stmt->close();
-
-    // ── GCS 上で <案件ID>-<キー>.pdf へ複製する ──
-    // pdf-converter がファイル名から ai_case_id を抽出する仕様のため
-    // （^(\d+)[-_] に一致しないと 500 になる）、受付時の
-    // bulk/<port>/<batch>/<seq>.pdf のままでは変換できない。
     try {
-        $dstObject = $aiCaseId . '-' . $fileKey . '.pdf';
-        $newUri = bulk_copy_gcs($r['gcs_path'], $dstObject, $GLOBALS['gcs_bucket'] ?? 'analygent');
-        $stmt = $conn->prepare("UPDATE ai_case SET full_file_Paths = ?, update_at = now() WHERE ai_case_id = ?");
-        $stmt->bind_param('si', $newUri, $aiCaseId);
-        $stmt->execute();
-        $stmt->close();
+        $aiCaseId = bulk_create_case($conn, $user_id, $caseName, [[
+            'original_name' => $r['original_name'],
+            'gcs_path'      => $r['gcs_path'],
+            'file_key'      => $fileKey,
+        ]]);
     } catch (Throwable $e) {
-        bulk_log("APPROVE COPY_NG batch_id={$batch_id} seq={$seq} case={$aiCaseId} " . $e->getMessage());
+        bulk_log("APPROVE COPY_NG batch_id={$batch_id} seq={$seq} " . $e->getMessage());
         bulk_update_file($conn, (int)$r['id'], [
             'status'        => BULK_F_ERROR,
             'error_message' => '変換用ファイルの準備に失敗しました',

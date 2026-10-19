@@ -6,10 +6,9 @@
  *
  * 受信 (application/json または form):
  *   loginkey : string  必須
- *   mode     : "A" | "B"  確認画面の方式（A=ページ単位 / B=ファイル単位）
  *
  * 返却:
- *   { status:"success", batch_id:"251015-03", mode:"B",
+ *   { status:"success", batch_id:"251015-03",
  *     files_per_request:3, max_files:100 }
  *
  * 備考:
@@ -27,11 +26,8 @@ $body = json_decode($raw, true);
 if (!is_array($body)) { $body = $_POST; }
 
 $loginkey = $body['loginkey'] ?? null;
-$mode     = strtoupper((string)($body['mode'] ?? BULK_MODE_FILE));
-
-if (!in_array($mode, [BULK_MODE_PAGE, BULK_MODE_FILE], true)) {
-    bulk_error('mode は A（ページ単位で確認）か B（ファイル単位で確認）を指定してください。');
-}
+// 確認方式はファイル単位（B）のみ。送られてきても見ない。
+$mode     = BULK_MODE_FILE;
 
 // ── 認証（既存 sapis と同じ作法）──
 $user_id = null;
@@ -69,12 +65,11 @@ $stmt->bind_param('siiss', $batch_id, $user_id, $company_id, $mode, $status);
 $stmt->execute();
 $stmt->close();
 
-bulk_log("INIT batch_id={$batch_id} user_id={$user_id} company_id={$company_id} mode={$mode}");
+bulk_log("INIT batch_id={$batch_id} user_id={$user_id} company_id={$company_id}");
 
 bulk_json([
     'status'            => 'success',
     'batch_id'          => $batch_id,
-    'mode'              => $mode,
     'files_per_request' => BULK_FILES_PER_REQUEST,
     'max_files'         => BULK_MAX_FILES,
     'max_file_size'     => BULK_MAX_FILE_SIZE,

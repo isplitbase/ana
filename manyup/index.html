@@ -85,13 +85,6 @@
   <div class="panel">
     <h2>② ファイルを選ぶ</h2>
     <div class="row">
-      <label for="mode">確認方式</label>
-      <select id="mode">
-        <option value="B" selected>B：ファイル単位で確認（一覧表）</option>
-        <option value="A">A：ページ単位で確認</option>
-      </select>
-    </div>
-    <div class="row">
       <label for="files">PDF</label>
       <input type="file" id="files" accept="application/pdf" multiple>
     </div>
@@ -153,7 +146,7 @@
   'use strict';
 
   var $ = function (id) { return document.getElementById(id); };
-  var state = { batchId: null, mode: 'B', files: [], timer: null, review: null };
+  var state = { batchId: null, files: [], timer: null, review: null };
 
   // ---- 接続先 --------------------------------------------------------
   // この画面は 8012 / 8056 どちらの DocumentRoot 配下に置いても動く。
@@ -234,14 +227,13 @@
     if (!state.files.length) { log('PDFを選択してください', 'err'); return; }
 
     var btn = this; btn.disabled = true;
-    state.mode = $('mode').value;
 
     log('--- 開始: ' + state.files.length + ' 件 / 接続先 ' + base() + ' ---');
 
     api('bulk_upload_init.php', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ loginkey: lk, mode: state.mode })
+      body: JSON.stringify({ loginkey: lk })
     })
     .then(function (r) {
       state.batchId = r.batch_id;
@@ -342,7 +334,7 @@
     if (!state.batchId) { log('バッチがまだありません', 'err'); return; }
     var lk = $('loginkey').value.trim();
     var q = 'bulk_upload_review.php?loginkey=' + encodeURIComponent(lk) +
-            '&batch_id=' + state.batchId + '&mode=' + state.mode +
+            '&batch_id=' + state.batchId +
             ($('onlyWarn').checked ? '&only=warn' : '');
     api(q).then(function (r) {
       state.review = r;

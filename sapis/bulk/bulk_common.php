@@ -46,9 +46,12 @@ const BULK_ANALYZE_PARALLEL = 1;
  *  （PIDが使い回された場合に、生きている処理を横取りしないため）。 */
 const BULK_STALE_SECONDS = 180;
 
-/** 確認画面の方式 */
-const BULK_MODE_PAGE = 'A';   // ページ単位で1枚ずつ確認
-const BULK_MODE_FILE = 'B';   // ファイル単位の一覧で確認
+/** 確認画面の方式。ファイル単位の一覧で確認する B のみ。
+ *  以前はページ単位で1枚ずつ確認する A も用意していたが、ページ画像は
+ *  承認後の変換で初めて作られるため確認画面に出せず、使われないまま
+ *  だったので削除した（2026-10-19）。bulk_batches.mode 列は残してあり、
+ *  常に 'B' を入れる。 */
+const BULK_MODE_FILE = 'B';
 
 /** バッチの状態 */
 const BULK_ST_OPEN      = 'OPEN';       // 受付中（ファイル送信の途中）
@@ -147,6 +150,9 @@ function bulk_new_batch_id(mysqli $conn): string {
  * 案件名を組み立てる。
  * 例: [一括 251015-03 #007] 10160114-202503_大倉電気株式会社.pdf
  * 一覧でバッチごとに固まり、投入順も分かるようにしている。
+ *
+ * 【1案件=1ファイル前提】1ファイルの通し番号とファイル名で名付けている。
+ * 複数ファイルの案件では、組の代表（先頭のファイル）で名付けるなどの決めが要る。
  */
 function bulk_case_name(string $batchId, int $seq, string $originalName): string {
     $name = sprintf('[一括 %s #%03d] %s', $batchId, $seq, $originalName);
@@ -305,6 +311,74 @@ function bulk_copy_gcs(string $srcUri, string $dstObject, string $bucketName): s
     $srcBucket = $storage->bucket($m[1]);
     $srcBucket->object($m[2])->copy($storage->bucket($bucketName), ['name' => ltrim($dstObject, '/')]);
     return "gs://{$bucketName}/" . ltrim($dstObject, '/');
+}
+
+/**
+ * 案件（ai_case）を1件作り、受付ファイルを変換用の名前に複製する。
+ *
+ * ai_case はもともと1案件に複数ファイルを持てる作り
+ * （upload_file_name / upload_file_keys / full_file_Paths を「|,|」で連結）で、
+ * 通常のアップロード画面でも2ファイルの案件が作られている。
+ * そのため、この関数もファイルの配列を受け取る形にしてある。
+ *
+ * 【1案件=1ファイル前提】現在の呼び出し元（bulk_upload_approve.php）は
+ * 常に1件だけ渡す。複数ファイルを1案件にまとめる場合は、
+ * 同じ case_group のファイルをまとめて渡せばよい（README 参照）。
+ *
+ * @param array $members  [ ['original_name'=>..., 'gcs_path'=>..., 'file_key'=>...], ... ]
+ *                        file_key は upload_file_keys に入る帳票キー
+ *                        （currentTermBalanceSheet 等）。案件内で重複不可。
+ * @return int  作成した ai_case_id
+ * @throws RuntimeException  複製に失敗した場合。案件の行は作成済みのまま残る
+ *                           （メッセージに案件IDを含める）。
+ */
+function bulk_create_case(mysqli $conn, ?int $userId, string $caseName, array $members): int {
+    if (!$members) {
+        throw new InvalidArgumentException('案件にするファイルがありません');
+    }
+    $keys = array_column($members, 'file_key');
+    if (count($keys) !== count(array_unique($keys))) {
+        // 複製先が <案件ID>-<キー>.pdf のため、キーが重なると上書きしてしまう
+        throw new InvalidArgumentException('同じ案件内で帳票キーが重複しています: ' . implode(',', $keys));
+    }
+
+    $names = implode('|,|', array_column($members, 'original_name'));
+    $keyStr = implode('|,|', $keys);
+    $paths = implode('|,|', array_column($members, 'gcs_path'));
+    $status = 'UPST';   // 既存フローと同じ「アップロード済み・変換待ち」
+
+    $stmt = $conn->prepare(
+        "INSERT INTO ai_case
+           (user_id, update_user_id, create_at, update_at, status, case_name,
+            upload_file_name, upload_file_keys, full_file_Paths)
+         VALUES (?, ?, now(), now(), ?, ?, ?, ?, ?)"
+    );
+    $stmt->bind_param('iisssss', $userId, $userId, $status, $caseName, $names, $keyStr, $paths);
+    $stmt->execute();
+    $aiCaseId = (int)$conn->insert_id;
+    $stmt->close();
+
+    // GCS 上で <案件ID>-<キー>.pdf へ複製する。
+    // pdf-converter がファイル名から ai_case_id を抽出する仕様のため
+    // （^(\d+)[-_] に一致しないと 500 になる）、受付時の
+    // bulk/<port>/<batch>/<seq>.pdf のままでは変換できない。
+    $bucket = $GLOBALS['gcs_bucket'] ?? 'analygent';
+    $newUris = [];
+    foreach ($members as $m) {
+        try {
+            $newUris[] = bulk_copy_gcs($m['gcs_path'], $aiCaseId . '-' . $m['file_key'] . '.pdf', $bucket);
+        } catch (Throwable $e) {
+            throw new RuntimeException("case={$aiCaseId} 複製に失敗: " . $e->getMessage(), 0, $e);
+        }
+    }
+
+    $joined = implode('|,|', $newUris);
+    $stmt = $conn->prepare("UPDATE ai_case SET full_file_Paths = ?, update_at = now() WHERE ai_case_id = ?");
+    $stmt->bind_param('si', $joined, $aiCaseId);
+    $stmt->execute();
+    $stmt->close();
+
+    return $aiCaseId;
 }
 
 /**

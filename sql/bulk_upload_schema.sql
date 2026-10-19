@@ -4,6 +4,8 @@
 --
 -- 設計方針:
 --   - 1案件(ai_case) = 1ファイル。ファイル名で会社を束ねることはしない。
+--     ただし将来、複数ファイルを1案件にまとめられるよう case_group 列を
+--     用意してある（現在は常に NULL）。
 --   - ai_case は「確認画面で承認された後」に作成する。
 --     承認前の中途半端な案件がファイル一覧に出ないようにするため。
 --   - 重い処理(期判定・解析)は Web API では行わず、cron 起動のワーカーが行う。
@@ -14,7 +16,7 @@ CREATE TABLE IF NOT EXISTS bulk_batches (
     batch_id      VARCHAR(20)  NOT NULL COMMENT 'バッチID 例: 251015-03（日付＋当日連番）',
     user_id       INT          NOT NULL COMMENT '投入したユーザー',
     company_id    INT          NOT NULL COMMENT '一覧の絞り込みに使用',
-    mode          CHAR(1)      NOT NULL COMMENT '確認画面の方式 A=ページ単位 / B=ファイル単位',
+    mode          CHAR(1)      NOT NULL COMMENT '確認画面の方式。B=ファイル単位のみ（A=ページ単位は 2026-10-19 に廃止）',
     status        VARCHAR(16)  NOT NULL COMMENT 'OPEN/QUEUED/DETECTING/REVIEW/APPROVED/ANALYZING/DONE/ERROR/CANCELED',
     total_files   INT          NOT NULL DEFAULT 0 COMMENT '受領したファイル数',
     done_files    INT          NOT NULL DEFAULT 0 COMMENT '処理が終わったファイル数',
@@ -36,6 +38,7 @@ CREATE TABLE IF NOT EXISTS bulk_batch_files (
     original_name   VARCHAR(512) NOT NULL COMMENT 'アップロード時のファイル名',
     gcs_path        VARCHAR(1024) NOT NULL COMMENT 'gs://analygent/bulk/<port>/<batch_id>/<seq>.pdf',
     size_bytes      BIGINT                DEFAULT NULL,
+    case_group      INT                   DEFAULT NULL COMMENT '同じ案件にまとめるファイルの組番号。NULL=単独で1案件。現在は常にNULL（将来用）',
     status          VARCHAR(16)  NOT NULL COMMENT 'RECEIVED/DETECTING/DETECTED/APPROVED/ANALYZING/DONE/ERROR/SKIPPED',
     worker_pid      INT                   DEFAULT NULL COMMENT '処理中のワーカーPID（並列制御）',
 
@@ -58,5 +61,6 @@ CREATE TABLE IF NOT EXISTS bulk_batch_files (
     UNIQUE KEY uk_batch_seq (batch_id, seq),
     KEY idx_batch_status (batch_id, status),
     KEY idx_claim (batch_id, status, seq),
-    KEY idx_ai_case (ai_case_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='まとめてアップロードの明細（1行=1ファイル=1案件）';
+    KEY idx_ai_case (ai_case_id),
+    KEY idx_case_group (batch_id, case_group)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='まとめてアップロードの明細（1行=1ファイル。現在は1ファイル=1案件）';
