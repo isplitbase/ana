@@ -7,7 +7,10 @@
  *
  * 1案件あたりの流れ（既存の画面操作と同じ順序）:
  *   1. pdf-converter /convert   PDF→画像変換。img_urls と imgtype_request が入る
- *   2. do_ai.php                読取（OCR）。帳票種類は変換時の自動判定をそのまま使う
+ *   2. do_ai.php                読取（OCR）の開始。帳票種類は変換時の自動判定をそのまま使う
+ *   3. 読取の完了を待つ          do_ai.php は Python を裏に投げるだけで待たないため、
+ *                               案件の状態が読取中を抜けるまでポーリングする
+ *   4. get_ai_response.php      読取結果の確定。ポイント消費もここで行われる
  *
  * 財務分析・CF分析は do_ai.php の後続で行われる設計のため、
  * ここでは読取までを担当する。
@@ -144,6 +147,41 @@ function bulk_call_do_ai(string $loginkey, int $aiCaseId, string $postingPeriod,
         return ['ok' => false, 'error' => "do_ai http={$code} " . mb_substr((string)$body, 0, 300)];
     }
     return ['ok' => true, 'error' => null];
+}
+
+/**
+ * 読取（Python）が終わるまで待つ。
+ *
+ * do_ai.php は Python を「& で裏に投げる」だけで、すぐ success を返す。
+ * 読取結果を書き、status を AIOK にするのは、その裏で走る Python 側である。
+ * そのため do_ai.php の応答を待っただけで get_ai_response.php を呼ぶと、
+ * response がまだ空で「JSONデコードに失敗しました」となり AIERR になる。
+ *
+ * 画面では読取中の状態をポーリングして待っているため、ワーカーでも同じく待つ。
+ * 判定は案件一覧の表示（_ai_case_list_helper.php の _ai_case_convert_status）
+ * に合わせ、処理中を表す状態から抜けるまでを待ちとする。
+ *
+ * @return array{ok:bool, status:string, error:?string}
+ */
+function bulk_wait_for_read(mysqli $conn, int $aiCaseId, int $timeoutSec = 1200): array {
+    // 読取が終わるまでに通過する状態（画像変換中〜OCR読取中）
+    $inProgress = ['INIT', 'UPLD', 'MakeImageStart', 'UPST', 'IMGTYPE', 'IMED', 'AIST', '1000'];
+
+    $deadline = time() + $timeoutSec;
+    $last     = '';
+    while (time() < $deadline) {
+        $r   = $conn->query("SELECT status FROM ai_case WHERE ai_case_id = " . (int)$aiCaseId);
+        $row = $r ? $r->fetch_assoc() : null;
+        if (!$row) { return ['ok' => false, 'status' => '', 'error' => '案件が見つかりません']; }
+
+        $last = (string)$row['status'];
+        if (!in_array($last, $inProgress, true)) {
+            return ['ok' => true, 'status' => $last, 'error' => null];
+        }
+        sleep(5);
+    }
+    return ['ok' => false, 'status' => $last,
+            'error' => "読取が {$timeoutSec} 秒以内に終わりませんでした（状態={$last}）"];
 }
 
 /**
@@ -338,7 +376,31 @@ function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun)
             continue;
         }
 
-        // ── 4. 読取結果の確定（ポイント消費もここで行われる）──
+        // ── 4. 読取（Python）が終わるまで待つ ──
+        // do_ai.php は起動するだけで待たないため、ここで待たないと
+        // 次の get_ai_response.php が空の response を読んで AIERR になる。
+        $wait = bulk_wait_for_read($conn, $aiCaseId);
+        if (!$wait['ok']) {
+            bulk_update_file($conn, $id, [
+                'status'        => BULK_F_ERROR,
+                'error_message' => mb_substr((string)$wait['error'], 0, 1000),
+            ]);
+            bulk_log("ANALYZE WAIT_NG batch_id={$batchId} seq={$t['seq']} case={$aiCaseId} {$wait['error']}");
+            bulk_refresh_counts($conn, $batchId);
+            continue;
+        }
+        if ($wait['status'] === 'AIERR') {
+            bulk_update_file($conn, $id, [
+                'status'        => BULK_F_ERROR,
+                'error_message' => '読取に失敗しました（AIERR）',
+            ]);
+            bulk_log("ANALYZE READ_NG batch_id={$batchId} seq={$t['seq']} case={$aiCaseId} status=AIERR");
+            bulk_refresh_counts($conn, $batchId);
+            continue;
+        }
+        bulk_log("ANALYZE READ_OK batch_id={$batchId} seq={$t['seq']} case={$aiCaseId} status={$wait['status']}");
+
+        // ── 5. 読取結果の確定（ポイント消費もここで行われる）──
         $fin = bulk_call_get_ai_response($loginkey, $aiCaseId, $port);
         if (!$fin['ok']) {
             bulk_update_file($conn, $id, [
@@ -350,7 +412,7 @@ function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun)
             continue;
         }
 
-        // ── 5. 読取が成立したかを案件の状態で確かめる ──
+        // ── 6. 読取が成立したかを案件の状態で確かめる ──
         $chk = bulk_case_read_ok($conn, $aiCaseId);
         if (!$chk['ok']) {
             bulk_update_file($conn, $id, [
