@@ -9,7 +9,7 @@
  * 失敗に気づけるよう、バッチIDなしで取れるようにしている。
  * 案件一覧の画面を開いたときに呼び、件数があれば知らせる、といった使い方を想定。
  *
- * 受信 (GET または POST):
+ * 受信 (POST のみ。application/json または form):
  *   loginkey : string 必須
  *   days     : int    省略時 7（1〜30）。この日数以内に作られたバッチが対象
  *   batch_id : string 省略可。指定するとそのバッチだけ
@@ -30,9 +30,10 @@ require_once __DIR__ . '/bulk_common.php';
 
 global $conn, $damy_flag;
 
-$loginkey = $_REQUEST['loginkey'] ?? null;
-$batch_id = $_REQUEST['batch_id'] ?? null;
-$days     = (int)($_REQUEST['days'] ?? 7);
+$body = bulk_read_request();   // POST 専用（GET は 405）
+$loginkey = $body['loginkey'] ?? null;
+$batch_id = $body['batch_id'] ?? null;
+$days     = (int)($body['days'] ?? 7);
 $days     = max(1, min(30, $days ?: 7));
 
 $user_id = null;

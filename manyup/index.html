@@ -196,6 +196,15 @@
     el.scrollTop = el.scrollHeight;
   }
 
+  // API はすべて POST（loginkey を URL に載せない）。JSON で送る。
+  function post(path, data) {
+    return api(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+  }
+
   function api(path, opts) {
     var url = base() + path;
     return fetch(url, opts).then(function (r) {
@@ -225,7 +234,7 @@
     var lk = $('loginkey').value.trim();
     if (!lk) { log('loginkey を入力してください', 'err'); return; }
     // 存在しないバッチIDを問い合わせ、認証が通るかだけを見る
-    api('bulk_upload_status.php?loginkey=' + encodeURIComponent(lk) + '&batch_id=000000-00')
+    post('bulk_upload_status.php', { loginkey: lk, batch_id: '000000-00' })
       .then(function () { log('接続OK（認証は通りました）', 'ok'); })
       .catch(function (e) {
         var m = String(e.message);
@@ -338,8 +347,7 @@
   function poll() {
     if (!state.batchId) { log('バッチがまだありません', 'err'); return; }
     var lk = $('loginkey').value.trim();
-    api('bulk_upload_status.php?loginkey=' + encodeURIComponent(lk) + '&batch_id=' + state.batchId +
-        (state.noReview ? '&detail=1' : ''))
+    post('bulk_upload_status.php', { loginkey: lk, batch_id: state.batchId, detail: state.noReview })
       .then(function (r) {
         if (r.no_review) {
           renderDirect(r);
@@ -390,10 +398,9 @@
   function loadReview() {
     if (!state.batchId) { log('バッチがまだありません', 'err'); return; }
     var lk = $('loginkey').value.trim();
-    var q = 'bulk_upload_review.php?loginkey=' + encodeURIComponent(lk) +
-            '&batch_id=' + state.batchId +
-            ($('onlyWarn').checked ? '&only=warn' : '');
-    api(q).then(function (r) {
+    post('bulk_upload_review.php', {
+      loginkey: lk, batch_id: state.batchId, only: $('onlyWarn').checked ? 'warn' : ''
+    }).then(function (r) {
       state.review = r;
       renderReview(r);
       $('btnApprove').disabled = (r.batch_status !== 'REVIEW');
@@ -427,7 +434,7 @@
   $('btnFailures').addEventListener('click', function () {
     var lk = $('loginkey').value.trim();
     if (!lk) { log('loginkey を入力してください', 'err'); return; }
-    api('bulk_upload_failures.php?loginkey=' + encodeURIComponent(lk) + '&days=7').then(function (r) {
+    post('bulk_upload_failures.php', { loginkey: lk, days: 7 }).then(function (r) {
       if (!r.count) {
         $('failureArea').innerHTML = '<p class="hint">直近7日間に、案件にできなかったファイルはありません。</p>';
         log('最近の失敗: 0 件', 'ok');

@@ -4,10 +4,10 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * バッチの進捗を返す。画面から5秒間隔で呼ばれる想定。
  *
- * 受信 (GET または POST):
+ * 受信 (POST のみ。application/json または form):
  *   loginkey : string 必須
  *   batch_id : string 必須
- *   detail   : "1" を指定するとファイル明細も返す（既定は件数のみ）
+ *   detail   : true（または 1）を指定するとファイル明細も返す（既定は件数のみ）
  *
  * 返却:
  *   { status:"success", batch_id, batch_status, no_review,
@@ -31,9 +31,10 @@ require_once __DIR__ . '/bulk_common.php';
 
 global $conn, $damy_flag;
 
-$loginkey = $_REQUEST['loginkey'] ?? null;
-$batch_id = $_REQUEST['batch_id'] ?? null;
-$detail   = (string)($_REQUEST['detail'] ?? '0') === '1';
+$body = bulk_read_request();   // POST 専用（GET は 405）
+$loginkey = $body['loginkey'] ?? null;
+$batch_id = $body['batch_id'] ?? null;
+$detail   = filter_var($body['detail'] ?? false, FILTER_VALIDATE_BOOLEAN);   // true / 1 / "1" を受け付ける
 
 if (empty($batch_id)) { bulk_error('batch_id が指定されていません。'); }
 

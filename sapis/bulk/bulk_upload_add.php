@@ -27,8 +27,9 @@ if (!empty($google_application_credentials)) {
     putenv("GOOGLE_APPLICATION_CREDENTIALS=" . $google_application_credentials);
 }
 
-$loginkey = $_POST['loginkey'] ?? null;
-$batch_id = $_POST['batch_id'] ?? null;
+$body     = bulk_read_request();   // POST 専用（GET は 405）。multipart なので $_POST が返る
+$loginkey = $body['loginkey'] ?? null;
+$batch_id = $body['batch_id'] ?? null;
 
 if (empty($batch_id)) {
     bulk_error('batch_id が指定されていません。');

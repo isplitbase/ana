@@ -22,9 +22,7 @@ require_once __DIR__ . '/bulk_common.php';
 
 global $conn, $damy_flag;
 
-$raw  = file_get_contents('php://input');
-$body = json_decode($raw, true);
-if (!is_array($body)) { $body = $_POST; }
+$body = bulk_read_request();   // POST 専用（GET は 405）
 
 $loginkey = $body['loginkey'] ?? null;
 $batch_id = $body['batch_id'] ?? null;
@@ -83,6 +81,6 @@ bulk_json([
     'no_review'    => $noReview,
     'message'      => $noReview
         ? '受付を締め切りました。サーバで1件ずつ案件を登録します（案件一覧に順に「帳票識別中」で出ます）。'
-          . '失敗したファイルは bulk_upload_status.php?detail=1 または bulk_upload_failures.php で取得できます。'
+          . '失敗したファイルは bulk_upload_status.php（detail: true） または bulk_upload_failures.php で取得できます。'
         : '受付を締め切りました。処理の進捗は bulk_upload_status.php で取得してください。',
 ]);

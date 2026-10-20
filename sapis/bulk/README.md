@@ -34,6 +34,13 @@
                                              status=DONE
 ```
 
+## API はすべて POST
+
+GET は受け付けない（405）。loginkey が URL に入ると、Apache のアクセスログや
+ブラウザの履歴に残るため。既存の sapis もすべて POST。
+本文は JSON（`Content-Type: application/json`）か form。ファイルを送る
+`bulk_upload_add.php` だけは multipart/form-data。
+
 ## なぜ分割送信なのか
 
 PHP の `max_file_uploads = 20` のため、100本を1リクエストで送ると
@@ -78,7 +85,7 @@ cron で毎分起動するワーカーが処理する。
 | 段階 | 起きうる失敗 | 画面が知る方法 |
 |---|---|---|
 | アップロード時 | PDF以外・50MB超・保存失敗 | `bulk_upload_add.php` の応答 `skipped[]`（その場で返る） |
-| 登録処理中 | 期判定・案件作成の失敗、ログイン切れ | `bulk_upload_status.php?detail=1` の `files[]`（`status=ERROR` と `error_message`）、またはバッチIDなしで `bulk_upload_failures.php` |
+| 登録処理中 | 期判定・案件作成の失敗、ログイン切れ | `bulk_upload_status.php（detail: true）` の `files[]`（`status=ERROR` と `error_message`）、またはバッチIDなしで `bulk_upload_failures.php` |
 | 案件ができた後 | 画像変換の失敗など | 通常の流れと同じく、案件一覧の状態に出る |
 
 登録処理中に失敗したファイルは**案件が作られないので、案件一覧には出ない**。
@@ -126,7 +133,7 @@ cron で毎分起動するワーカーが処理する。
 1ファイル1行の一覧で、期区分と「含める／除外」を確認する。
 帳票種類（BS / PL / 販管費 など）は、承認後の画像変換時の自動判定をそのまま使う。
 
-`bulk_upload_review.php?only=warn` で**要確認のものだけ**返せる。
+`bulk_upload_review.php` に `only: "warn"` を付けると**要確認のものだけ**返せる。
 件数が多いときは全件を目視させるより現実的。
 
 > 以前はページ単位で1枚ずつ確認する方式（mode=A）も用意していたが、

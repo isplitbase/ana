@@ -15,7 +15,7 @@
  *   RECEIVED → DETECTING（登録中）→ DONE（ai_case_id あり）/ ERROR（error_message あり）
  *
  * 失敗したファイルは案件が作られないため、案件一覧には出ない。
- * 画面は bulk_upload_status.php?detail=1 か bulk_upload_failures.php で検知する。
+ * 画面は bulk_upload_status.php（detail: true） か bulk_upload_failures.php で検知する。
  */
 
 /**

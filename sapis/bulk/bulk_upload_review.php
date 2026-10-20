@@ -4,7 +4,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * 確認画面に出すデータを返す。1ファイル1行の一覧で確認する。
  *
- * 受信 (GET または POST):
+ * 受信 (POST のみ。application/json または form):
  *   loginkey : string 必須
  *   batch_id : string 必須
  *
@@ -23,9 +23,10 @@ require_once __DIR__ . '/bulk_common.php';
 
 global $conn, $damy_flag;
 
-$loginkey = $_REQUEST['loginkey'] ?? null;
-$batch_id = $_REQUEST['batch_id'] ?? null;
-$only     = strtolower((string)($_REQUEST['only'] ?? ''));   // '', 'warn', 'ng'
+$body = bulk_read_request();   // POST 専用（GET は 405）
+$loginkey = $body['loginkey'] ?? null;
+$batch_id = $body['batch_id'] ?? null;
+$only     = strtolower((string)($body['only'] ?? ''));   // '', 'warn', 'ng'
 
 if (empty($batch_id)) { bulk_error('batch_id が指定されていません。'); }
 
@@ -47,7 +48,7 @@ if ($user_id !== null) {
 
 $batch = bulk_fetch_batch($conn, $batch_id, $company_id);
 if ($batch['mode'] === BULK_MODE_DIRECT) {
-    bulk_error('承認せずのバッチには確認画面がありません。結果は bulk_upload_status.php?detail=1 で取得してください。', 409);
+    bulk_error('承認せずのバッチには確認画面がありません。結果は bulk_upload_status.php（detail: true） で取得してください。', 409);
 }
 
 // ── 明細 ──

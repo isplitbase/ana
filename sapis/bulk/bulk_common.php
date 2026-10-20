@@ -112,6 +112,23 @@ function bulk_error(string $message, int $httpCode = 400, array $extra = []): vo
     bulk_json(array_merge(['status' => 'error', 'message' => $message], $extra), $httpCode);
 }
 
+/**
+ * リクエストの本文を受け取る。POST 専用。
+ *
+ * GET は受け付けない。loginkey が URL に入ると、Apache のアクセスログや
+ * ブラウザの履歴に残るため（既存の sapis もすべて POST）。
+ * 本文は JSON を優先し、無ければ form / multipart（$_POST）を見る。
+ * （OPTIONS のプリフライトは common.php が先に返している）
+ */
+function bulk_read_request(): array {
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        header('Allow: POST');
+        bulk_error('POST で送ってください（loginkey を URL に載せないため、GET は受け付けません）。', 405);
+    }
+    $body = json_decode((string)file_get_contents('php://input'), true);
+    return is_array($body) ? $body : $_POST;
+}
+
 // ─────────────────────────────────────────
 // ログ
 // ─────────────────────────────────────────

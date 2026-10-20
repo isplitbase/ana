@@ -24,9 +24,7 @@ require_once __DIR__ . '/bulk_common.php';
 
 global $conn, $damy_flag;
 
-$raw  = file_get_contents('php://input');
-$body = json_decode($raw, true);
-if (!is_array($body)) { $body = $_POST; }
+$body = bulk_read_request();   // POST 専用（GET は 405）
 
 $loginkey = $body['loginkey'] ?? null;
 // 承認せず（D）か、承認あり（B）か。form で送られた "1" / "true" も受け付ける。
