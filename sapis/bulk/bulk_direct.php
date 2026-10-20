@@ -5,11 +5,16 @@
  * 承認せず（mode=D）のバッチを処理する。bulk_worker.php から読み込んで使う。
  * Webから直接叩くものではない。
  *
- * 1ファイルずつ、通常画面のアップロードと同じ getpdfinfo.php をサーバから呼び、
- * 1ファイル1案件として登録する。期判定・案件作成・画像変換の起動はすべて
- * getpdfinfo.php（→ upload_files.php）が行うので、案件は通常画面から
- * アップロードしたものと全く同じになる（案件名も元のファイル名）。
+ * 1案件分ずつ、通常画面のアップロードと同じ getpdfinfo.php をサーバから呼んで登録する。
+ * 期判定・案件作成・画像変換の起動はすべて getpdfinfo.php（→ upload_files.php）が
+ * 行うので、案件は通常画面からアップロードしたものと全く同じになる（案件名も元のファイル名）。
  * 案件は「帳票識別中」になり、以後は通常の流れ。
+ *
+ * 1案件の単位:
+ *   case_group なし … 1ファイル＝1案件（一覧からまとめて選んだ場合）
+ *   case_group あり … 同じ組のファイル（最大3本）＝1案件（ドラッグ＆ドロップ1回）。
+ *                     getpdfinfo.php が今期・前期・前々期を振り分ける（通常画面で
+ *                     複数ファイルを入れたときと同じ）
  *
  * ファイルの状態:
  *   RECEIVED → DETECTING（登録中）→ DONE（ai_case_id あり）/ ERROR（error_message あり）
@@ -30,17 +35,22 @@
  *
  * @return array{ok:bool, ai_case_id:?int, error:?string}
  */
-function bulk_call_getpdfinfo(string $loginkey, string $localPdf, string $originalName, int $port): array {
+function bulk_call_getpdfinfo(string $loginkey, array $pdfs, int $port): array {
     // ブラウザと同じ公開名で呼ぶ（BULK_PUBLIC_HOST の説明を参照）
     $url = 'https://' . BULK_PUBLIC_HOST . ':' . $port . '/sapis/getpdfinfo.php';
+
+    // $pdfs = [ ['path' => ローカルの一時ファイル, 'name' => 元のファイル名], ... ]（最大3本＝1案件）
+    // 通常画面と同じく files[] で送る。添字を付けないと PHP の配列キーが重なるため files[0] 形式にする。
+    $fields = ['loginkey' => $loginkey];
+    foreach (array_values($pdfs) as $i => $p) {
+        $fields["files[{$i}]"] = new CURLFile($p['path'], 'application/pdf', $p['name']);
+    }
+
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POST           => true,
-        CURLOPT_POSTFIELDS     => [
-            'loginkey' => $loginkey,
-            'files[]'  => new CURLFile($localPdf, 'application/pdf', $originalName),
-        ],
+        CURLOPT_POSTFIELDS     => $fields,
         CURLOPT_CONNECTTIMEOUT => 30,
         CURLOPT_TIMEOUT        => 900,   // Apache Timeout / max_execution_time と同じ
         CURLOPT_NOSIGNAL       => 1,
@@ -67,32 +77,46 @@ function bulk_call_getpdfinfo(string $loginkey, string $localPdf, string $origin
     return ['ok' => false, 'ai_case_id' => null, 'error' => "登録に失敗しました（http={$code}）: {$msg}"];
 }
 
-/** GCS のオブジェクトをローカルの一時ファイルに落とす。呼び出し側で消すこと。 */
-function bulk_download_gcs(string $gcsUri): string {
-    if (!preg_match('#^gs://([^/]+)/(.+)$#', $gcsUri, $m)) {
-        throw new RuntimeException('GCS のURIが不正です: ' . $gcsUri);
-    }
-    if (!empty($GLOBALS['google_application_credentials'])) {
-        putenv('GOOGLE_APPLICATION_CREDENTIALS=' . $GLOBALS['google_application_credentials']);
-    }
-    $tmp = tempnam(sys_get_temp_dir(), 'bulk_direct_');
-    $storage = new \Google\Cloud\Storage\StorageClient();
-    $storage->bucket($m[1])->object($m[2])->downloadToFile($tmp);
-    return $tmp;
-}
+/**
+ * 次に登録する1案件分のファイルを取り出す（承認せず専用）。
+ *
+ * case_group が無いファイルは1本で1案件。case_group があるファイル（ドラッグ＆ドロップで
+ * まとめて入れたもの）は、同じ組を全部まとめて取り出す。組の一部だけを別々のワーカーが
+ * 取ると、1案件のはずが別々の案件になってしまうため、組は1回の UPDATE でまとめて押さえる
+ * （同じ UPDATE が同時に走っても、先に押さえた側以外は0件になる）。
+ *
+ * @return array|null  取り出した行（seq 順）。無ければ null
+ */
+function bulk_claim_direct_unit(mysqli $conn, string $batchId): ?array {
+    $pid = getmypid();
+    $bid = $conn->real_escape_string($batchId);
 
-/** GCS のオブジェクトを消す。失敗しても処理は止めない（ログだけ残す）。 */
-function bulk_delete_gcs(string $gcsUri): void {
-    if (!preg_match('#^gs://([^/]+)/(.+)$#', $gcsUri, $m)) { return; }
-    try {
-        if (!empty($GLOBALS['google_application_credentials'])) {
-            putenv('GOOGLE_APPLICATION_CREDENTIALS=' . $GLOBALS['google_application_credentials']);
+    for ($try = 0; $try < 10; $try++) {
+        $c = $conn->query("SELECT id, case_group FROM bulk_batch_files
+                            WHERE batch_id = '{$bid}' AND status = '" . BULK_F_RECEIVED . "'
+                            ORDER BY seq LIMIT 1");
+        $cand = $c ? $c->fetch_assoc() : null;
+        if (!$cand) { return null; }
+
+        $set = "status = '" . BULK_F_DETECTING . "', worker_pid = {$pid}, update_at = now()";
+        if ($cand['case_group'] === null) {
+            $conn->query("UPDATE bulk_batch_files SET {$set}
+                           WHERE id = " . (int)$cand['id'] . " AND status = '" . BULK_F_RECEIVED . "'");
+            $pick = "id = " . (int)$cand['id'];
+        } else {
+            $g = (int)$cand['case_group'];
+            $conn->query("UPDATE bulk_batch_files SET {$set}
+                           WHERE batch_id = '{$bid}' AND case_group = {$g} AND status = '" . BULK_F_RECEIVED . "'");
+            $pick = "batch_id = '{$bid}' AND case_group = {$g}";
         }
-        $storage = new \Google\Cloud\Storage\StorageClient();
-        $storage->bucket($m[1])->object($m[2])->delete();
-    } catch (Throwable $e) {
-        bulk_log("GCS_DELETE_NG {$gcsUri} " . $e->getMessage());
+        if ($conn->affected_rows < 1) { continue; }   // 他のワーカーに先を越された。次の候補へ
+
+        $res = $conn->query("SELECT * FROM bulk_batch_files
+                              WHERE {$pick} AND worker_pid = {$pid} AND status = '" . BULK_F_DETECTING . "'
+                              ORDER BY seq");
+        return $res ? $res->fetch_all(MYSQLI_ASSOC) : null;
     }
+    return null;
 }
 
 /**
@@ -155,40 +179,47 @@ function bulk_phase_direct(mysqli $conn, array $batch, int $port, bool $dryRun):
     }
 
     $did = 0;
-    while ($loginkey !== null
-           && ($t = bulk_claim_file($conn, $batchId, BULK_F_RECEIVED, BULK_F_DETECTING)) !== null) {
+    while ($loginkey !== null && ($unit = bulk_claim_direct_unit($conn, $batchId)) !== null) {
         $did++;
-        $id = (int)$t['id'];
+        $seqs  = implode(',', array_column($unit, 'seq'));
+        $names = implode(' / ', array_column($unit, 'original_name'));
 
-        $tmp = null;
+        // 1案件分（単独なら1本、まとめた組なら最大3本）を落として、まとめて getpdfinfo.php へ
+        $pdfs = [];
         try {
-            $tmp = bulk_download_gcs($t['gcs_path']);
-            $r = bulk_call_getpdfinfo($loginkey, $tmp, $t['original_name'], $port);
+            foreach ($unit as $t) {
+                $pdfs[] = ['path' => bulk_download_gcs($t['gcs_path']), 'name' => $t['original_name']];
+            }
+            $r = bulk_call_getpdfinfo($loginkey, $pdfs, $port);
         } catch (Throwable $e) {
             $r = ['ok' => false, 'ai_case_id' => null, 'error' => '受付ファイルを読めませんでした: ' . $e->getMessage()];
         } finally {
-            if ($tmp !== null) { @unlink($tmp); }
+            foreach ($pdfs as $p) { @unlink($p['path']); }
         }
 
         if (!$r['ok']) {
-            // 受付ファイルは残す（入れ直しや原因調査に使うため）
-            bulk_update_file($conn, $id, [
-                'status'        => BULK_F_ERROR,
-                'error_message' => mb_substr((string)$r['error'], 0, 1000),
-            ]);
-            bulk_log("DIRECT NG batch_id={$batchId} seq={$t['seq']} name={$t['original_name']} {$r['error']}");
+            // 受付ファイルは残す（入れ直しや原因調査に使うため）。組の全員を同じ理由で失敗にする
+            foreach ($unit as $t) {
+                bulk_update_file($conn, (int)$t['id'], [
+                    'status'        => BULK_F_ERROR,
+                    'error_message' => mb_substr((string)$r['error'], 0, 1000),
+                ]);
+            }
+            bulk_log("DIRECT NG batch_id={$batchId} seq={$seqs} name={$names} {$r['error']}");
             bulk_refresh_counts($conn, $batchId);
             continue;
         }
 
-        bulk_update_file($conn, $id, [
-            'status'        => BULK_F_DONE,
-            'ai_case_id'    => (int)$r['ai_case_id'],
-            'error_message' => '',
-        ]);
-        // 案件は upload_files.php が自前の複製（<案件ID>-<キー>.pdf）を持つので、受付ファイルは不要
-        bulk_delete_gcs($t['gcs_path']);
-        bulk_log("DIRECT OK batch_id={$batchId} seq={$t['seq']} case={$r['ai_case_id']} name={$t['original_name']}");
+        foreach ($unit as $t) {
+            bulk_update_file($conn, (int)$t['id'], [
+                'status'        => BULK_F_DONE,
+                'ai_case_id'    => (int)$r['ai_case_id'],
+                'error_message' => '',
+            ]);
+            // 案件は upload_files.php が自前の複製（<案件ID>-<キー>.pdf）を持つので、受付ファイルは不要
+            bulk_delete_gcs($t['gcs_path']);
+        }
+        bulk_log("DIRECT OK batch_id={$batchId} seq={$seqs} case={$r['ai_case_id']} name={$names}");
         bulk_refresh_counts($conn, $batchId);
     }
 

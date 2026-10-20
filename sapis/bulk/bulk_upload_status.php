@@ -75,7 +75,7 @@ $out = [
 
 if ($detail) {
     $stmt = $conn->prepare(
-        "SELECT seq, original_name, status, posting_period, detected_labels,
+        "SELECT seq, original_name, status, case_group, posting_period, detected_labels,
                 detected_years, check_result, check_code, check_message,
                 ai_case_id, error_message
            FROM bulk_batch_files WHERE batch_id = ? ORDER BY seq"
@@ -89,6 +89,7 @@ if ($detail) {
             'seq'             => (int)$r['seq'],
             'name'            => $r['original_name'],
             'status'          => $r['status'],
+            'case_group'      => $r['case_group'] !== null ? (int)$r['case_group'] : null,   // 同じ値＝同じ案件
             'posting_period'  => $r['posting_period'],
             'detected_labels' => $r['detected_labels'],
             'detected_years'  => $r['detected_years'],

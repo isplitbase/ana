@@ -32,6 +32,10 @@
   th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
   th{background:#eef1f5;font-weight:600;white-space:nowrap}
   td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .dropzone{border:2px dashed var(--line);border-radius:8px;padding:28px 16px;text-align:center;
+            background:#fafbfc;margin:14px 0 10px;transition:background .15s,border-color .15s}
+  .dropzone.over{border-color:var(--accent);background:#eaf1f8}
+  .dropzone b{font-size:15px;color:var(--accent)}
   .bar{height:8px;background:#e5e7eb;border-radius:4px;overflow:hidden;margin:8px 0}
   .bar>i{display:block;height:100%;background:var(--accent);width:0;transition:width .3s}
   .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:12px;border:1px solid}
@@ -101,6 +105,13 @@
       <button id="btnStart">アップロード開始</button>
       <span id="fileCount" class="hint"></span>
     </div>
+
+    <div class="dropzone" id="dropZone">
+      <b>ここにPDFをドラッグ＆ドロップ</b><br>
+      <span class="hint">1回のドロップ＝1案件（最大3ファイル）。2ファイルを一緒にドロップすると、その2ファイルで1案件になります。<br>
+        「承認せず」と同じく確認画面を通さずに登録し、登録済みになると案件一覧に「帳票識別中」で出ます。続けて何度でもドロップできます。</span>
+    </div>
+    <div id="dropList"></div>
   </div>
 
   <!-- ③ 進捗 -->
@@ -410,6 +421,110 @@
           ' / 失敗 ' + r.summary.error +
           (r.summary.end_date_mismatch ? ' / 決算日の食い違い ' + r.summary.end_date_mismatch : '') + '）', 'ok');
     }).catch(function (e) { log(e.message, 'err'); });
+  }
+
+  // ---- ドラッグ＆ドロップ（1回のドロップ＝1案件）-------------------------
+  // ドロップごとに「承認せず」のバッチを1つ作り、ファイルを1案件としてまとめて送る（as_one_case）。
+  // サーバは通常画面と同じ getpdfinfo.php に1回で渡すので、複数ファイルなら
+  // 今期・前期・前々期が振り分けられた1案件になる。
+  var drops = [];       // { id, names, batchId, status, caseId, error }
+  var dropTimer = null;
+  var dz = $('dropZone');
+
+  ['dragenter', 'dragover'].forEach(function (ev) {
+    dz.addEventListener(ev, function (e) { e.preventDefault(); dz.classList.add('over'); });
+  });
+  ['dragleave', 'drop'].forEach(function (ev) {
+    dz.addEventListener(ev, function (e) { e.preventDefault(); dz.classList.remove('over'); });
+  });
+  dz.addEventListener('drop', function (e) {
+    handleDrop(Array.prototype.slice.call((e.dataTransfer && e.dataTransfer.files) || []));
+  });
+  // 枠の外に落としたときに、ブラウザが PDF を開いて画面から離れてしまわないようにする
+  window.addEventListener('dragover', function (e) { e.preventDefault(); });
+  window.addEventListener('drop', function (e) { e.preventDefault(); });
+
+  function handleDrop(files) {
+    if (!files.length) return;
+    var lk = $('loginkey').value.trim();
+    if (!lk) { log('loginkey を入力してください', 'err'); return; }
+
+    var d = { id: drops.length + 1, names: files.map(function (f) { return f.name; }),
+              batchId: null, status: 'SENDING', caseId: null, error: null };
+    drops.unshift(d);
+
+    // 1案件は通常画面と同じく最大3ファイル。PDF以外が混ざったら案件ごと受け付けない
+    var bad = files.filter(function (f) { return !/\.pdf$/i.test(f.name); });
+    if (files.length > 3) {
+      d.status = 'REJECTED'; d.error = '1案件は3ファイルまでです（' + files.length + ' ファイルをドロップ）';
+    } else if (bad.length) {
+      d.status = 'REJECTED'; d.error = 'PDF以外が含まれています：' + bad.map(function (f) { return f.name; }).join('、');
+    }
+    renderDrops();
+    if (d.status === 'REJECTED') { log('ドロップ#' + d.id + ' 受付不可：' + d.error, 'err'); return; }
+
+    post('bulk_upload_init.php', { loginkey: lk, no_review: true })
+      .then(function (r) {
+        d.batchId = r.batch_id;
+        var fd = new FormData();
+        fd.append('loginkey', lk);
+        fd.append('batch_id', r.batch_id);
+        fd.append('as_one_case', '1');
+        files.forEach(function (f, i) { fd.append('file' + (i + 1), f, f.name); });
+        return api('bulk_upload_add.php', { method: 'POST', body: fd });
+      })
+      .then(function () { return post('bulk_upload_close.php', { loginkey: lk, batch_id: d.batchId }); })
+      .then(function () {
+        d.status = 'QUEUED';
+        renderDrops();
+        log('ドロップ#' + d.id + ' 受付：' + d.names.join(' / ') + '（バッチ ' + d.batchId + '）', 'ok');
+        if (!dropTimer) { dropTimer = setInterval(pollDrops, 5000); }
+      })
+      .catch(function (e) {
+        d.status = 'REJECTED'; d.error = e.message;
+        renderDrops();
+        log('ドロップ#' + d.id + ' ' + e.message, 'err');
+      });
+  }
+
+  function pollDrops() {
+    var lk = $('loginkey').value.trim();
+    var pending = drops.filter(function (d) { return d.batchId && (d.status === 'QUEUED' || d.status === 'DETECTING'); });
+    if (!pending.length) { clearInterval(dropTimer); dropTimer = null; return; }
+
+    pending.forEach(function (d) {
+      post('bulk_upload_status.php', { loginkey: lk, batch_id: d.batchId, detail: true }).then(function (r) {
+        var files = r.files || [];
+        if (r.batch_status === 'DONE' || r.batch_status === 'ERROR') {
+          var ng = files.filter(function (f) { return f.status === 'ERROR'; })[0];
+          if (ng || r.batch_status === 'ERROR') {
+            d.status = 'ERROR'; d.error = ng ? ng.error_message : r.message;
+            log('ドロップ#' + d.id + ' 失敗：' + d.error, 'err');
+          } else {
+            d.status = 'DONE'; d.caseId = files.length ? files[0].ai_case_id : null;
+            log('ドロップ#' + d.id + ' 登録済み：案件ID ' + d.caseId + '（一覧画面に「帳票識別中」で出ます）', 'ok');
+          }
+        } else {
+          d.status = files.some(function (f) { return f.status === 'DETECTING'; }) ? 'DETECTING' : 'QUEUED';
+        }
+        renderDrops();
+      }).catch(function (e) { log(e.message, 'err'); });
+    });
+  }
+
+  function renderDrops() {
+    var label = { SENDING: '送信中', QUEUED: '待ち', DETECTING: '登録中', DONE: '登録済み', ERROR: '失敗', REJECTED: '受付不可' };
+    var cls   = { SENDING: 'plain', QUEUED: 'plain', DETECTING: 'warn', DONE: 'ok', ERROR: 'ng', REJECTED: 'ng' };
+    if (!drops.length) { $('dropList').innerHTML = ''; return; }
+    var h = '<table><thead><tr><th>ドロップ</th><th>ファイル（1案件）</th><th>状態</th><th>案件ID / 理由</th></tr></thead><tbody>';
+    drops.forEach(function (d) {
+      h += '<tr><td class="num">#' + d.id + '</td>' +
+           '<td>' + d.names.map(esc).join('<br>') + '</td>' +
+           '<td><span class="tag ' + cls[d.status] + '">' + label[d.status] + '</span></td>' +
+           '<td>' + (d.status === 'DONE' ? esc(d.caseId) :
+                     d.error ? '<span class="hint">' + esc(d.error) + '</span>' : '') + '</td></tr>';
+    });
+    $('dropList').innerHTML = h + '</tbody></table>';
   }
 
   // 承認せず：全件の登録が終わったら、一覧画面へ移るよう知らせる（1バッチにつき1回だけ）

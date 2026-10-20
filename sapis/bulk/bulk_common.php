@@ -504,6 +504,34 @@ function bulk_create_case(mysqli $conn, ?int $userId, string $caseName, array $m
     return $aiCaseId;
 }
 
+/** GCS のオブジェクトをローカルの一時ファイルに落とす。呼び出し側で消すこと。 */
+function bulk_download_gcs(string $gcsUri): string {
+    if (!preg_match('#^gs://([^/]+)/(.+)$#', $gcsUri, $m)) {
+        throw new RuntimeException('GCS のURIが不正です: ' . $gcsUri);
+    }
+    if (!empty($GLOBALS['google_application_credentials'])) {
+        putenv('GOOGLE_APPLICATION_CREDENTIALS=' . $GLOBALS['google_application_credentials']);
+    }
+    $tmp = tempnam(sys_get_temp_dir(), 'bulk_direct_');
+    $storage = new \Google\Cloud\Storage\StorageClient();
+    $storage->bucket($m[1])->object($m[2])->downloadToFile($tmp);
+    return $tmp;
+}
+
+/** GCS のオブジェクトを消す。失敗しても処理は止めない（ログだけ残す）。 */
+function bulk_delete_gcs(string $gcsUri): void {
+    if (!preg_match('#^gs://([^/]+)/(.+)$#', $gcsUri, $m)) { return; }
+    try {
+        if (!empty($GLOBALS['google_application_credentials'])) {
+            putenv('GOOGLE_APPLICATION_CREDENTIALS=' . $GLOBALS['google_application_credentials']);
+        }
+        $storage = new \Google\Cloud\Storage\StorageClient();
+        $storage->bucket($m[1])->object($m[2])->delete();
+    } catch (Throwable $e) {
+        bulk_log("GCS_DELETE_NG {$gcsUri} " . $e->getMessage());
+    }
+}
+
 /**
  * 未処理のファイルを1件だけロックして取り出す（並列ワーカー用）。
  *
