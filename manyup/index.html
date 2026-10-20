@@ -85,9 +85,9 @@
     </p>
   </div>
 
-  <!-- ② ファイル選択 -->
+  <!-- ②-1 ファイル選択 -->
   <div class="panel">
-    <h2>② ファイルを選ぶ</h2>
+    <h2>②-1 ファイルを選ぶ</h2>
     <div class="row">
       <label for="files">PDF</label>
       <input type="file" id="files" accept="application/pdf" multiple>
@@ -105,7 +105,11 @@
       <button id="btnStart">アップロード開始</button>
       <span id="fileCount" class="hint"></span>
     </div>
+  </div>
 
+  <!-- ②-2 ドラッグ＆ドロップ -->
+  <div class="panel">
+    <h2>②-2 ファイルをドラッグ＆ドロップ</h2>
     <div class="dropzone" id="dropZone">
       <b>ここにPDFをドラッグ＆ドロップ</b><br>
       <span class="hint">1回のドロップ＝1案件（最大3ファイル）。2ファイルを一緒にドロップすると、その2ファイルで1案件になります。<br>
