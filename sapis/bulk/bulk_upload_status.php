@@ -10,13 +10,20 @@
  *   detail   : "1" を指定するとファイル明細も返す（既定は件数のみ）
  *
  * 返却:
- *   { status:"success", batch_id, batch_status, mode,
+ *   { status:"success", batch_id, batch_status, no_review,
  *     total_files, done_files, error_files, progress_percent, message,
- *     files:[ {seq, name, status, posting_period, detected_labels,
- *              detected_years, check_result, check_message, ai_case_id} ] }
+ *     files:[ {seq, name, status, ai_case_id, error_message,
+ *              posting_period, detected_labels, detected_years, check_result, check_message} ] }
+ *
+ * 承認せず（no_review=true）のバッチでの見方:
+ *   batch_status が DONE になれば全件の処理が終わっている。
+ *   files[].status  DONE  → 登録済み（ai_case_id が案件ID）
+ *                   ERROR → 失敗（error_message が理由）。案件は作られていない
+ *                   RECEIVED / DETECTING → 待ち / 登録中
  *
  * 備考:
  *   ポーリングで頻繁に呼ばれるため、既定では明細を返さず件数だけにしている。
+ *   バッチIDが分からない場合（画面を読み直した後など）の失敗の検知は bulk_upload_failures.php。
  */
 
 include "./common.php";
@@ -56,6 +63,7 @@ $out = [
     'status'           => 'success',
     'batch_id'         => $batch_id,
     'batch_status'     => $batch['status'],
+    'no_review'        => ($batch['mode'] === BULK_MODE_DIRECT),
     'total_files'      => $total,
     'done_files'       => $done,
     'error_files'      => (int)$batch['error_files'],

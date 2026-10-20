@@ -46,6 +46,9 @@ if ($user_id !== null) {
 }
 
 $batch = bulk_fetch_batch($conn, $batch_id, $company_id);
+if ($batch['mode'] === BULK_MODE_DIRECT) {
+    bulk_error('承認せずのバッチには確認画面がありません。結果は bulk_upload_status.php?detail=1 で取得してください。', 409);
+}
 
 // ── 明細 ──
 $sql = "SELECT seq, original_name, gcs_path, size_bytes, status, posting_period,

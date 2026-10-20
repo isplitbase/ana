@@ -5,10 +5,13 @@
  * まとめてアップロードのバッチを開始し、batch_id を発行する。
  *
  * 受信 (application/json または form):
- *   loginkey : string  必須
+ *   loginkey  : string  必須
+ *   no_review : bool    省略可。true なら「承認せず」。確認画面を通さず、
+ *                       通常画面のアップロードと同じ流れで1ファイル1案件として登録する
+ *                       （案件は「帳票識別中」になり、以後は通常の流れ）
  *
  * 返却:
- *   { status:"success", batch_id:"251015-03",
+ *   { status:"success", batch_id:"251015-03", no_review:false,
  *     files_per_request:3, max_files:100 }
  *
  * 備考:
@@ -26,8 +29,9 @@ $body = json_decode($raw, true);
 if (!is_array($body)) { $body = $_POST; }
 
 $loginkey = $body['loginkey'] ?? null;
-// 確認方式はファイル単位（B）のみ。送られてきても見ない。
-$mode     = BULK_MODE_FILE;
+// 承認せず（D）か、承認あり（B）か。form で送られた "1" / "true" も受け付ける。
+$noReview = filter_var($body['no_review'] ?? false, FILTER_VALIDATE_BOOLEAN);
+$mode     = $noReview ? BULK_MODE_DIRECT : BULK_MODE_FILE;
 
 // ── 認証（既存 sapis と同じ作法）──
 $user_id = null;
@@ -65,11 +69,12 @@ $stmt->bind_param('siiss', $batch_id, $user_id, $company_id, $mode, $status);
 $stmt->execute();
 $stmt->close();
 
-bulk_log("INIT batch_id={$batch_id} user_id={$user_id} company_id={$company_id}");
+bulk_log("INIT batch_id={$batch_id} user_id={$user_id} company_id={$company_id} mode={$mode}");
 
 bulk_json([
     'status'            => 'success',
     'batch_id'          => $batch_id,
+    'no_review'         => $noReview,
     'files_per_request' => BULK_FILES_PER_REQUEST,
     'max_files'         => BULK_MAX_FILES,
     'max_file_size'     => BULK_MAX_FILE_SIZE,

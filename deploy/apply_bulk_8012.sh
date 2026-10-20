@@ -25,9 +25,9 @@ set -e
 S=/tmp/bulkdeploy
 D12=/srv/www/apps/analygent_backend/releases/20251117-0946_8012
 
-FILES="bulk_analyze.php bulk_common.php bulk_cron.sh bulk_detect.php
+FILES="bulk_analyze.php bulk_common.php bulk_cron.sh bulk_detect.php bulk_direct.php
        bulk_upload_add.php bulk_upload_approve.php bulk_upload_close.php
-       bulk_upload_init.php bulk_upload_review.php bulk_upload_status.php
+       bulk_upload_init.php bulk_upload_review.php bulk_upload_status.php bulk_upload_failures.php
        bulk_worker.php index.html bulk_upload_schema.sql"
 
 echo "--- 1/5 事前確認 ---"
@@ -37,7 +37,7 @@ done
 for f in "$S"/bulk_*.php; do php -l "$f" >/dev/null || exit 1; done
 bash -n "$S/bulk_cron.sh"
 [ -d "$D12/sapis" ] || { echo "配置先がありません: $D12/sapis"; exit 1; }
-echo "13ファイル / 構文チェック OK"
+echo "$(echo $FILES | wc -w)ファイル / 構文チェック OK"
 
 echo "--- 2/5 配置前の状態を記録 ---"
 BK="/srv/www/apps/analygent_backend/releases/bulk_backup-8012-$(date +%Y%m%d-%H%M%S)"

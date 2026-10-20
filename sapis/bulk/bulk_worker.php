@@ -2,23 +2,25 @@
 /**
  * bulk_worker.php
  * ─────────────────────────────────────────────────────────────────────────────
- * まとめてアップロードのワーカー。crontab から毎分起動する。
+ * まとめてアップロードのワーカー。bulk_cron.sh から起動する
+ * （cron で毎分。承認せずのバッチは受付完了時にも起動する）。
  *
  * 使い方:
- *   php /srv/www/apps/analygent_backend/releases/8056/sapis/bulk_worker.php
+ *   php bulk_worker.php                     ← 通常
  *   php bulk_worker.php --batch=261015-02   ← 特定バッチだけ処理（動作確認用）
  *   php bulk_worker.php --dry-run           ← 判定も解析も行わず対象だけ表示
  *
- * crontab 例（毎分）:
- *   * * * * * /usr/bin/php /srv/www/apps/analygent_backend/releases/8056/sapis/bulk_worker.php >> /var/log/ana/bulk_worker_$(date +\%Y\%m\%d).log 2>&1
- *
  * 処理内容:
- *   QUEUED   → 期判定＋整合チェック → REVIEW（人の確認待ち）
- *   APPROVED → 案件ごとに解析を実行   → DONE
+ *   承認あり（mode=B）
+ *     QUEUED   → 期判定＋整合チェック → REVIEW（人の確認待ち）
+ *     APPROVED → 案件ごとに解析を実行   → DONE
+ *   承認せず（mode=D）
+ *     QUEUED   → 1ファイルずつ getpdfinfo.php で案件を登録 → DONE（bulk_direct.php）
  *
- * 多重起動の防止:
- *   bulk_batches.worker_pid / locked_at でロックする。
- *   ロックが BULK_LOCK_TIMEOUT 秒より古い場合は、前回のワーカーが落ちたとみなして奪う。
+ * 並列:
+ *   同じワーカーを bulk_cron.sh が複数本起動し、ファイルを1件ずつ奪い合う
+ *   （bulk_claim_file）。バッチはロックしない。解析だけは VM のメモリを
+ *   大きく使うため、サーバ全体で BULK_ANALYZE_PARALLEL 件までに抑える。
  */
 
 // Webから叩かれないようにする（cron / CLI 専用）
@@ -34,12 +36,6 @@ require_once __DIR__ . '/bulk_detect.php';
 
 global $conn, $port;
 
-/** 同時に処理するファイル数。pdf-converter は concurrency=1 のため上げすぎない。 */
-const BULK_PARALLEL = 3;
-
-/** ロックを奪うまでの秒数（この時間を過ぎたロックは死んだワーカーのものとみなす） */
-const BULK_LOCK_TIMEOUT = 1800;
-
 $opts     = getopt('', ['batch::', 'dry-run']);
 $onlyBatch = $opts['batch'] ?? null;
 $dryRun    = array_key_exists('dry-run', $opts);
@@ -47,28 +43,65 @@ $dryRun    = array_key_exists('dry-run', $opts);
 // ─────────────────────────────────────────
 // 対象バッチを1つ取り出してロックする
 // ─────────────────────────────────────────
-function bulk_claim_batch(mysqli $conn, ?string $onlyBatch): ?array {
-    // 複数ワーカーが同じバッチに同時参加できるようにする
-    //
-    // 以前はバッチ単位でロックしていたが、それだと先に起動した1本が
-    // バッチを占有し、残りのワーカーが何も取れず並列にならなかった。
-    // バッチはロックせず「処理対象として選ぶ」だけにして、
-    // 実際の排他は bulk_claim_file()（ファイル単位）で行う。
+/**
+ * 処理待ちのバッチを古い順にすべて返す。
+ *
+ * 複数ワーカーが同じバッチに同時参加できるよう、バッチはロックしない。
+ * 実際の排他は bulk_claim_file()（ファイル単位）で行う。
+ *
+ * 以前は一番古い1つだけを返していたが、それだと古いバッチの解析中
+ * （解析は同時に1件まで）に、後から来たバッチ（特に承認せず）が
+ * その解析が全部終わるまで待たされた。ワーカーは古い順に試し、
+ * 手を付けられたところで止まる（main を参照）。
+ */
+function bulk_candidate_batches(mysqli $conn, ?string $onlyBatch): array {
     $where = "status IN ('" . BULK_ST_QUEUED . "','" . BULK_ST_DETECTING . "','"
              . BULK_ST_APPROVED . "','" . BULK_ST_ANALYZING . "')";
     if ($onlyBatch !== null) {
         $where .= " AND batch_id = '" . $conn->real_escape_string($onlyBatch) . "'";
     }
+    $res = $conn->query("SELECT * FROM bulk_batches WHERE {$where} ORDER BY create_at");
+    return $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
+}
 
-    $res = $conn->query("SELECT * FROM bulk_batches WHERE {$where} ORDER BY create_at LIMIT 1");
-    $batch = $res ? $res->fetch_assoc() : null;
-    if (!$batch) { return null; }
+/**
+ * 1つのバッチを、方式と状態に応じた処理に回す。
+ * @return bool このワーカーが1件以上処理したか
+ */
+function bulk_run_batch(mysqli $conn, array $batch, int $port, bool $dryRun): bool {
+    $batchId = $batch['batch_id'];
 
     // 最後に触ったワーカーを記録する（進捗確認用。排他には使わない）
-    $pid = getmypid();
-    $conn->query("UPDATE bulk_batches SET worker_pid = {$pid}, locked_at = now()
-                   WHERE batch_id = '" . $conn->real_escape_string($batch['batch_id']) . "'");
-    return $batch;
+    $conn->query("UPDATE bulk_batches SET worker_pid = " . getmypid() . ", locked_at = now()
+                   WHERE batch_id = '" . $conn->real_escape_string($batchId) . "'");
+
+    try {
+        if ($batch['mode'] === BULK_MODE_DIRECT) {
+            // 承認せず：通常画面のアップロードと同じ getpdfinfo.php で1件ずつ登録する
+            require_once __DIR__ . '/bulk_direct.php';
+            return bulk_phase_direct($conn, $batch, $port, $dryRun);
+        }
+        if ($batch['status'] === BULK_ST_QUEUED || $batch['status'] === BULK_ST_DETECTING) {
+            return bulk_phase_detect($conn, $batch, $port, $dryRun);
+        }
+        if ($batch['status'] === BULK_ST_APPROVED || $batch['status'] === BULK_ST_ANALYZING) {
+            // ANALYZING も受け入れる。1本目が APPROVED → ANALYZING に変えた後、
+            // 2本目以降はここに来るため、APPROVED だけを見ていると何もせず終了し、
+            // 解析が並列にならない（期判定が QUEUED と DETECTING の両方を見るのと同じ理由）。
+            require_once __DIR__ . '/bulk_analyze.php';
+            return bulk_phase_analyze($conn, $batch, $port, $dryRun);
+        }
+        return false;
+    } catch (Throwable $e) {
+        bulk_update_batch($conn, $batchId, [
+            'status'  => BULK_ST_ERROR,
+            'message' => mb_substr('処理中にエラーが発生しました: ' . $e->getMessage(), 0, 500),
+        ]);
+        bulk_log("ERROR batch_id={$batchId} " . $e->getMessage());
+        return true;
+    } finally {
+        bulk_release($conn, $batchId);
+    }
 }
 
 function bulk_release(mysqli $conn, string $batchId): void {
@@ -80,7 +113,8 @@ function bulk_release(mysqli $conn, string $batchId): void {
 // ─────────────────────────────────────────
 // 期判定フェーズ（QUEUED → REVIEW）
 // ─────────────────────────────────────────
-function bulk_phase_detect(mysqli $conn, array $batch, int $port, bool $dryRun): void {
+/** @return bool このワーカーが1件以上処理したか（false なら別のバッチを探しに行く） */
+function bulk_phase_detect(mysqli $conn, array $batch, int $port, bool $dryRun): bool {
     $batchId = $batch['batch_id'];
     bulk_update_batch($conn, $batchId, [
         'status'  => BULK_ST_DETECTING,
@@ -99,7 +133,7 @@ function bulk_phase_detect(mysqli $conn, array $batch, int $port, bool $dryRun):
                                 AND status IN ('" . BULK_F_RECEIVED . "','" . BULK_F_DETECTING . "')
                               ORDER BY seq");
         while ($t = $res->fetch_assoc()) { echo "  [dry-run] #{$t['seq']} {$t['original_name']}\n"; }
-        return;
+        return false;
     }
 
     // 重複チェック用。既に判定済みのものも対象に含める。
@@ -112,7 +146,9 @@ function bulk_phase_detect(mysqli $conn, array $batch, int $port, bool $dryRun):
     }
 
     // 1件ずつロックして取り出す（複数ワーカーで並列実行できるようにするため）
+    $did = 0;
     while (($t = bulk_claim_file($conn, $batchId, BULK_F_RECEIVED, BULK_F_DETECTING)) !== null) {
+        $did++;
         $id = (int)$t['id'];
 
         $r = bulk_detect_period($t['gcs_path'], $t['original_name'], $port);
@@ -152,7 +188,7 @@ function bulk_phase_detect(mysqli $conn, array $batch, int $port, bool $dryRun):
     // 未処理が残っていれば、他のワーカーがまだ処理中。状態は変えない。
     if (bulk_count_files($conn, $batchId, [BULK_F_RECEIVED, BULK_F_DETECTING]) > 0) {
         bulk_log("DETECT PARTIAL batch_id={$batchId}（他のワーカーが処理中）");
-        return;
+        return $did > 0;
     }
 
     bulk_update_batch($conn, $batchId, [
@@ -160,41 +196,19 @@ function bulk_phase_detect(mysqli $conn, array $batch, int $port, bool $dryRun):
         'message' => '判定が終わりました。内容をご確認ください。',
     ]);
     bulk_log("DETECT END batch_id={$batchId}");
+    return $did > 0;
 }
 
 // ─────────────────────────────────────────
 // main
 // ─────────────────────────────────────────
-$batch = bulk_claim_batch($conn, $onlyBatch);
-if (!$batch) {
-    // 対象なし。cron で毎分動くため、ここでは何も出力しない。
-    exit(0);
-}
-
-$batchId = $batch['batch_id'];
-bulk_log("CLAIM batch_id={$batchId} status={$batch['status']} pid=" . getmypid());
-
-try {
-    if ($batch['status'] === BULK_ST_QUEUED || $batch['status'] === BULK_ST_DETECTING) {
-        bulk_phase_detect($conn, $batch, (int)$port, $dryRun);
-    } elseif ($batch['status'] === BULK_ST_APPROVED || $batch['status'] === BULK_ST_ANALYZING) {
-        // ANALYZING も受け入れる。1本目が APPROVED → ANALYZING に変えた後、
-        // 2本目以降はここに来るため、APPROVED だけを見ていると何もせず終了し、
-        // 解析が並列にならない（期判定が QUEUED と DETECTING の両方を見るのと同じ理由）。
-        // 解析フェーズは bulk_analyze.php に分けてある
-        if (file_exists(__DIR__ . '/bulk_analyze.php')) {
-            require_once __DIR__ . '/bulk_analyze.php';
-            bulk_phase_analyze($conn, $batch, (int)$port, $dryRun);
-        } else {
-            bulk_log("ANALYZE SKIP batch_id={$batchId} bulk_analyze.php が未配置です");
-        }
+// 古いバッチから順に試し、手を付けられたところで止める。
+// 何もできなかったバッチ（解析の上限に達している・ファイルが他のワーカーに取られている等）は
+// 飛ばして次へ進むので、後から来たバッチが待たされない。
+foreach (bulk_candidate_batches($conn, $onlyBatch) as $batch) {
+    bulk_log("CLAIM batch_id={$batch['batch_id']} mode={$batch['mode']} status={$batch['status']} pid=" . getmypid());
+    if (bulk_run_batch($conn, $batch, (int)$port, $dryRun)) {
+        break;
     }
-} catch (Throwable $e) {
-    bulk_update_batch($conn, $batchId, [
-        'status'  => BULK_ST_ERROR,
-        'message' => mb_substr('処理中にエラーが発生しました: ' . $e->getMessage(), 0, 500),
-    ]);
-    bulk_log("ERROR batch_id={$batchId} " . $e->getMessage());
-} finally {
-    bulk_release($conn, $batchId);
 }
+// 対象なしなら何も出力しない（cron で毎分動くため）

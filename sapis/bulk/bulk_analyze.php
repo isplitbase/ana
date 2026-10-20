@@ -327,26 +327,15 @@ function bulk_case_read_ok(mysqli $conn, int $aiCaseId): array {
     return ['ok' => true, 'error' => null];
 }
 
-/** バッチのユーザーの有効な loginkey を取得する（ワーカーは画面を経由しないため） */
-function bulk_find_loginkey(mysqli $conn, int $userId): ?string {
-    $stmt = $conn->prepare(
-        "SELECT lh.loginkey
-           FROM login_history lh
-          INNER JOIN users u ON u.user_id = lh.user_id
-          WHERE lh.user_id = ? AND lh.status = 'OK' AND u.status > 0 AND u.status < 999
-          ORDER BY lh.create_at DESC LIMIT 1"
-    );
-    $stmt->bind_param('i', $userId);
-    $stmt->execute();
-    $r = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
-    return $r['loginkey'] ?? null;
-}
 
 // ─────────────────────────────────────────
 // 解析フェーズ本体
 // ─────────────────────────────────────────
-function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun): void {
+/**
+ * @return bool このワーカーが1件以上処理したか。false なら、ワーカーは別のバッチを探しに行く
+ *              （同時実行の上限に達していた、処理するファイルが無かった等）。
+ */
+function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun): bool {
     $batchId = $batch['batch_id'];
     $userId  = (int)$batch['user_id'];
 
@@ -362,7 +351,7 @@ function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun)
             'message' => 'ログイン情報が見つかりませんでした。再度ログインしてからやり直してください。',
         ]);
         bulk_log("ANALYZE NO_LOGINKEY batch_id={$batchId} user_id={$userId}");
-        return;
+        return false;
     }
 
     // 落ちたワーカーが掴んだままのファイルを戻してから始める。
@@ -378,16 +367,16 @@ function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun)
                                 AND status IN ('" . BULK_F_APPROVED . "','" . BULK_F_ANALYZING . "')
                               ORDER BY seq");
         while ($t = $res->fetch_assoc()) { echo "  [dry-run] #{$t['seq']} case={$t['ai_case_id']}\n"; }
-        return;
+        return false;
     }
 
     // 解析は do_ai.php がこのVM上で Python を起動するため、同時実行数を抑える。
-    // 他のワーカーが既に上限まで解析していれば、ここでは何もせず譲る。
+    // 上限はサーバ全体で数える。既に上限まで解析していれば、ここでは何もせず譲る。
     $selfPid = getmypid();
-    if (bulk_count_live_analyzing($conn, $batchId, $selfPid) >= BULK_ANALYZE_PARALLEL) {
+    if (bulk_count_live_analyzing($conn, $selfPid) >= BULK_ANALYZE_PARALLEL) {
         bulk_log("ANALYZE BUSY batch_id={$batchId}（同時実行の上限 "
                . BULK_ANALYZE_PARALLEL . " に達しているため譲ります）");
-        return;
+        return false;
     }
 
     // 1件ずつロックして取り出す
@@ -398,7 +387,9 @@ function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun)
     //   ・取り出しを ai_case_id 単位にする（同じ案件の行をまとめて ANALYZING にする）
     //   ・完了・失敗の記録も、同じ案件の行すべてに反映する
     // 必要がある（README 参照）。
+    $did = 0;   // このワーカーが実際に処理した件数
     while (($t = bulk_claim_file($conn, $batchId, BULK_F_APPROVED, BULK_F_ANALYZING)) !== null) {
+        $did++;
         $id       = (int)$t['id'];
         $aiCaseId = (int)$t['ai_case_id'];
         if ($aiCaseId <= 0) {
@@ -535,7 +526,7 @@ function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun)
     // 未処理が残っていれば、他のワーカーがまだ解析中。状態は変えない。
     if (bulk_count_files($conn, $batchId, [BULK_F_APPROVED, BULK_F_ANALYZING]) > 0) {
         bulk_log("ANALYZE PARTIAL batch_id={$batchId}（他のワーカーが処理中）");
-        return;
+        return $did > 0;
     }
     $r = $conn->query("SELECT SUM(status = '" . BULK_F_ERROR . "') AS err,
                               SUM(end_date_check = '" . BULK_EDC_MISMATCH . "') AS edc_ng
@@ -554,4 +545,5 @@ function bulk_phase_analyze(mysqli $conn, array $batch, int $port, bool $dryRun)
         'message' => $notes ? '解析が終わりました（' . implode('、', $notes) . '）。' : '解析が終わりました。',
     ]);
     bulk_log("ANALYZE END batch_id={$batchId} errors={$errCount} end_date_mismatch={$edcCount}");
+    return $did > 0;
 }

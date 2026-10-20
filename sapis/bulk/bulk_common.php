@@ -46,12 +46,22 @@ const BULK_ANALYZE_PARALLEL = 1;
  *  （PIDが使い回された場合に、生きている処理を横取りしないため）。 */
 const BULK_STALE_SECONDS = 180;
 
-/** 確認画面の方式。ファイル単位の一覧で確認する B のみ。
- *  以前はページ単位で1枚ずつ確認する A も用意していたが、ページ画像は
- *  承認後の変換で初めて作られるため確認画面に出せず、使われないまま
- *  だったので削除した（2026-10-19）。bulk_batches.mode 列は残してあり、
- *  常に 'B' を入れる。 */
-const BULK_MODE_FILE = 'B';
+/** 処理の方式（bulk_batches.mode）
+ *
+ *  B（承認あり）: 期判定 → 確認画面で承認 → 画像変換・読取までワーカーが行う。
+ *  D（承認せず）: 確認画面を通さず、通常画面のアップロード（getpdfinfo.php）を
+ *                1ファイルずつサーバから呼び、1ファイル1案件として登録する。
+ *                案件は「帳票識別中」になり、以後は通常の流れと全く同じ。
+ *
+ *  以前はページ単位で確認する A もあったが、ページ画像は承認後の変換で
+ *  初めて作られるため確認画面に出せず、使われないままだったので削除した（2026-10-19）。 */
+const BULK_MODE_FILE   = 'B';
+const BULK_MODE_DIRECT = 'D';
+
+/** 承認せず（D）で getpdfinfo.php を呼ぶときのホスト名。
+ *  getpdfinfo.php は受け取ったホスト名あてに upload_files.php へ転送し、証明書も検証する。
+ *  127.0.0.1 で呼ぶと証明書が合わずに転送が失敗するため、ブラウザと同じ公開名で呼ぶ。 */
+const BULK_PUBLIC_HOST = 'corp.analygent.com';
 
 /** バッチの状態 */
 const BULK_ST_OPEN      = 'OPEN';       // 受付中（ファイル送信の途中）
@@ -350,6 +360,43 @@ function bulk_parse_date(?string $text): ?string {
 }
 
 /**
+ * バッチのユーザーの有効な loginkey を取得する。
+ * ワーカーは画面を経由しないため、既存API（do_ai.php / getpdfinfo.php 等）を
+ * そのユーザーとして呼ぶときに使う。解析（承認あり）と登録（承認せず）の両方で使う。
+ */
+function bulk_find_loginkey(mysqli $conn, int $userId): ?string {
+    $stmt = $conn->prepare(
+        "SELECT lh.loginkey
+           FROM login_history lh
+          INNER JOIN users u ON u.user_id = lh.user_id
+          WHERE lh.user_id = ? AND lh.status = 'OK' AND u.status > 0 AND u.status < 999
+          ORDER BY lh.create_at DESC LIMIT 1"
+    );
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $r = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $r['loginkey'] ?? null;
+}
+
+/**
+ * ワーカーをすぐ起動する（cron の次の起動を待たない）。
+ *
+ * 承認せずは「アップロードしたらすぐ一覧に戻り、帳票識別中になる」ことが求められるため、
+ * 受付完了の時点で起動する。bulk_cron.sh が本数の上限を守るので、何度呼んでも増えすぎない。
+ * 起動に失敗しても、cron が1分以内に拾うので処理は止まらない。
+ */
+function bulk_kick_worker(): void {
+    $sh = __DIR__ . '/bulk_cron.sh';
+    if (!is_file($sh) || !is_executable($sh)) {
+        bulk_log("KICK_SKIP {$sh} を実行できません（cron が拾います）");
+        return;
+    }
+    // 応答を待たないよう、裏で起動して即座に戻る
+    exec('nohup ' . escapeshellarg($sh) . ' > /dev/null 2>&1 &');
+}
+
+/**
  * Y-m-d を、読取AIが ai_case.closing_date に書く形（2025年05月31日）にする。
  * 画面や CF 分析（cash_ai.php）はこの形の文字列を受け取っているため、書き換えるときもそろえる。
  */
@@ -530,17 +577,19 @@ function bulk_reclaim_stale(mysqli $conn, string $batchId, string $stuck, string
 }
 
 /**
- * 他のワーカーが実際に解析中のファイル数を数える。
+ * 他のワーカーが実際に解析中のファイル数を、この環境のすべてのバッチを通して数える。
+ *
+ * 解析はVM上で Python を起動しメモリを大きく使うため、上限（BULK_ANALYZE_PARALLEL）は
+ * バッチごとではなくサーバ全体で守る必要がある。バッチごとに数えていると、
+ * 別々のバッチの解析が同時に走ってしまう。
  *
  * 件数だけでは、落ちたワーカーの取り残しも「解析中」に見えてしまうため、
  * PID が生きているものだけを数える。
  */
-function bulk_count_live_analyzing(mysqli $conn, string $batchId, int $selfPid): int {
-    $bid = $conn->real_escape_string($batchId);
+function bulk_count_live_analyzing(mysqli $conn, int $selfPid): int {
     $res = $conn->query(
         "SELECT worker_pid FROM bulk_batch_files
-          WHERE batch_id = '{$bid}'
-            AND status = '" . BULK_F_ANALYZING . "'
+          WHERE status = '" . BULK_F_ANALYZING . "'
             AND (worker_pid IS NULL OR worker_pid <> {$selfPid})"
     );
     if (!$res) { return 0; }

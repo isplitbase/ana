@@ -57,6 +57,9 @@ if ($user_id !== null) {
 }
 
 $batch = bulk_fetch_batch($conn, $batch_id, $company_id);
+if ($batch['mode'] === BULK_MODE_DIRECT) {
+    bulk_error('承認せずのバッチは承認の対象ではありません（受付後に自動で案件を登録します）。', 409);
+}
 if ($batch['status'] !== BULK_ST_REVIEW) {
     bulk_error('このバッチは確認待ちの状態ではありません（状態: ' . $batch['status'] . '）。', 409);
 }

@@ -67,12 +67,22 @@ bulk_update_batch($conn, $batch_id, [
     'message' => '処理の順番を待っています。',
 ]);
 bulk_refresh_counts($conn, $batch_id);
-bulk_log("CLOSE batch_id={$batch_id} total={$total}");
+bulk_log("CLOSE batch_id={$batch_id} total={$total} mode={$batch['mode']}");
+
+$noReview = ($batch['mode'] === BULK_MODE_DIRECT);
+if ($noReview) {
+    // 承認せず：すぐ登録を始める（cron の次の起動を待たない）
+    bulk_kick_worker();
+}
 
 bulk_json([
     'status'       => 'success',
     'batch_id'     => $batch_id,
     'total_files'  => $total,
     'batch_status' => BULK_ST_QUEUED,
-    'message'      => '受付を締め切りました。処理の進捗は bulk_upload_status.php で取得してください。',
+    'no_review'    => $noReview,
+    'message'      => $noReview
+        ? '受付を締め切りました。サーバで1件ずつ案件を登録します（案件一覧に順に「帳票識別中」で出ます）。'
+          . '失敗したファイルは bulk_upload_status.php?detail=1 または bulk_upload_failures.php で取得できます。'
+        : '受付を締め切りました。処理の進捗は bulk_upload_status.php で取得してください。',
 ]);

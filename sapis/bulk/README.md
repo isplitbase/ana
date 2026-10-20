@@ -51,15 +51,53 @@ cron で毎分起動するワーカーが処理する。
 落ちたワーカーが掴んだままのファイルは、PID が消えていて一定時間
 （`BULK_STALE_SECONDS`）を過ぎたら元の状態に戻して拾い直す。
 
+## 承認せず（no_review）
+
+`bulk_upload_init.php` に `no_review: true` を付けると、確認画面を通さず、
+**通常画面のアップロードと同じ流れ**で1ファイル1案件として登録する（`bulk_batches.mode = 'D'`）。
+
+```
+[画面]                    [API]                         [ワーカー]
+ アップロード（no_review） → init / add / close    受付完了でワーカーをすぐ起動
+ すぐ案件一覧に戻ってよい                                 ↓
+                                             1ファイルずつ getpdfinfo.php を呼ぶ
+                                             （通常画面と同じ。期判定→案件作成→画像変換の起動）
+                                             案件は「帳票識別中」→ 以後は通常の流れ
+```
+
+- 処理は作り直さず、通常画面が呼ぶ `getpdfinfo.php` をサーバから呼ぶ。案件は通常画面から
+  アップロードしたものと全く同じになる（案件名も元のファイル名、`[一括 …]` は付かない）
+- `getpdfinfo.php` はブラウザと同じ公開名（`BULK_PUBLIC_HOST`）で呼ぶ。127.0.0.1 だと、
+  内部で `upload_files.php` へ転送するときに証明書が合わず失敗する
+- 案件ができたら受付ファイルはその場で消す（案件は `upload_files.php` が別に複製を持つ）
+- 自動の再送はしない。応答だけが失われた場合に同じ案件が2件できるため（通常画面も再送しない）
+- ポイントはアップロード時にはかからない（通常どおり読取のときに消費）
+
+### 失敗の検知（正式な画面向け）
+
+| 段階 | 起きうる失敗 | 画面が知る方法 |
+|---|---|---|
+| アップロード時 | PDF以外・50MB超・保存失敗 | `bulk_upload_add.php` の応答 `skipped[]`（その場で返る） |
+| 登録処理中 | 期判定・案件作成の失敗、ログイン切れ | `bulk_upload_status.php?detail=1` の `files[]`（`status=ERROR` と `error_message`）、またはバッチIDなしで `bulk_upload_failures.php` |
+| 案件ができた後 | 画像変換の失敗など | 通常の流れと同じく、案件一覧の状態に出る |
+
+登録処理中に失敗したファイルは**案件が作られないので、案件一覧には出ない**。
+案件一覧を開いたときに `bulk_upload_failures.php`（直近7日、同じ会社）を呼び、
+件数があれば知らせる、という使い方を想定している。
+
 ## 並列数
 
 | 段階 | 同時実行 | 理由 |
 |---|---|---|
 | 期判定 | ワーカー本数まで（既定3） | Cloud Run を呼ぶだけで、サーバの負荷は小さい |
-| 解析 | `BULK_ANALYZE_PARALLEL`（1） | `do_ai.php` がこのVM上で Python を起動し、メモリを大きく使う |
+| 承認せずの登録 | ワーカー本数まで（既定3） | `getpdfinfo.php` を呼ぶだけ。重い画像変換は Cloud Run 側 |
+| 解析 | `BULK_ANALYZE_PARALLEL`（1）。**サーバ全体で** | `do_ai.php` がこのVM上で Python を起動し、メモリを大きく使う |
 
 2 vCPU / 7.7GB・swap なしの構成のため、解析を増やす場合は
 `free -m` と load average を見ながら1ずつにすること。
+
+ワーカーは処理待ちのバッチを古い順に試し、手を付けられたところで止まる。
+古いバッチが解析の上限で待っていても、後から来たバッチ（特に承認せず）は待たされない。
 
 ## 読取の完了を待つ理由
 
@@ -134,9 +172,11 @@ grep -rn "【1案件=1ファイル前提】" sapis/bulk
 | `bulk_common.php` | 定数・ログ・GCS・バッチ操作・案件作成の共通処理 |
 | `bulk_detect.php` | 期判定（ana-getpdfinfo 呼び出し）と整合チェック |
 | `bulk_analyze.php` | 解析（画像変換 → 読取 → 完了待ち → 確定） |
-| `bulk_worker.php` | cron から起動するワーカー |
+| `bulk_direct.php` | 承認せずの登録（getpdfinfo.php を1ファイルずつ呼ぶ） |
+| `bulk_worker.php` | ワーカー（cron と、承認せずの受付完了時に起動） |
 | `bulk_cron.sh` | ワーカーを既定本数まで起動する |
 | `bulk_upload_init.php` 〜 `bulk_upload_approve.php` | Web API 6本 |
+| `bulk_upload_failures.php` | 最近の失敗の一覧（バッチIDなしで取れる） |
 
 ## 配置
 

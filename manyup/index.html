@@ -93,6 +93,11 @@
       （PHP の max_file_uploads=20 の制限により、まとめて送ると21本目以降が無言で失われるため）。
     </p>
     <div class="row">
+      <label style="min-width:auto"><input type="checkbox" id="noReview"> <b>承認せず</b></label>
+      <span class="hint">確認画面を通さず、通常のアップロードと同じ流れで1ファイル1案件として登録します。
+        案件は順に「帳票識別中」で案件一覧に出ます（以後は通常の流れと同じ）。</span>
+    </div>
+    <div class="row">
       <button id="btnStart">アップロード開始</button>
       <span id="fileCount" class="hint"></span>
     </div>
@@ -122,8 +127,20 @@
     </div>
   </div>
 
+  <!-- ④' 承認せずの登録結果 -->
+  <div class="panel" id="panelDirect" style="display:none">
+    <h2>④ 登録結果（承認せず）</h2>
+    <p class="hint">サーバで1件ずつ案件を登録しています。この画面を閉じても処理は続きます。
+      失敗したファイルは案件が作られないため案件一覧には出ません。下の表と「最近の失敗」で確認できます。</p>
+    <div class="row">
+      <button class="sub" id="btnFailures">最近の失敗を表示（7日分）</button>
+    </div>
+    <div id="directArea"></div>
+    <div id="failureArea"></div>
+  </div>
+
   <!-- ④ 確認と承認 -->
-  <div class="panel">
+  <div class="panel" id="panelReview">
     <h2>④ 内容を確認して承認</h2>
     <div class="row">
       <button class="sub" id="btnReview">確認データを取得</button>
@@ -146,7 +163,18 @@
   'use strict';
 
   var $ = function (id) { return document.getElementById(id); };
-  var state = { batchId: null, files: [], timer: null, review: null };
+  var state = { batchId: null, files: [], timer: null, review: null, noReview: false, skipped: [] };
+
+  // 承認せずのときは、確認・承認の欄を隠し、登録結果の欄を出す
+  function applyMode(noReview) {
+    state.noReview = noReview;
+    $('panelDirect').style.display = noReview ? '' : 'none';
+    $('panelReview').style.display = noReview ? 'none' : '';
+    $('steps').querySelector('[data-s="DETECTING"]').textContent = noReview ? '登録中' : '期判定';
+    ['REVIEW', 'APPROVED', 'ANALYZING'].forEach(function (s) {
+      $('steps').querySelector('[data-s="' + s + '"]').style.display = noReview ? 'none' : '';
+    });
+  }
 
   // ---- 接続先 --------------------------------------------------------
   // この画面は 8012 / 8056 どちらの DocumentRoot 配下に置いても動く。
@@ -227,17 +255,22 @@
     if (!state.files.length) { log('PDFを選択してください', 'err'); return; }
 
     var btn = this; btn.disabled = true;
+    var noReview = $('noReview').checked;
+    state.skipped = [];
+    $('directArea').innerHTML = '';
 
-    log('--- 開始: ' + state.files.length + ' 件 / 接続先 ' + base() + ' ---');
+    log('--- 開始: ' + state.files.length + ' 件 / 接続先 ' + base() +
+        (noReview ? ' / 承認せず' : '') + ' ---');
 
     api('bulk_upload_init.php', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ loginkey: lk })
+      body: JSON.stringify({ loginkey: lk, no_review: noReview })
     })
     .then(function (r) {
       state.batchId = r.batch_id;
       $('batchId').textContent = r.batch_id;
+      applyMode(!!r.no_review);
       log('バッチ開始: ' + r.batch_id + '（1回 ' + r.files_per_request + ' 本・上限 ' + r.max_files + ' 本）', 'ok');
       return sendChunks(lk, r.files_per_request || 3);
     })
@@ -249,7 +282,12 @@
       });
     })
     .then(function (r) {
-      log('受付を締め切りました（' + r.total_files + ' 件）。処理の順番を待ちます。', 'ok');
+      if (r.no_review) {
+        log('受付を締め切りました（' + r.total_files + ' 件）。サーバで1件ずつ案件を登録します。' +
+            '案件一覧に戻っても処理は続きます。', 'ok');
+      } else {
+        log('受付を締め切りました（' + r.total_files + ' 件）。処理の順番を待ちます。', 'ok');
+      }
       startPolling();
     })
     .catch(function (e) { log(e.message, 'err'); })
@@ -274,7 +312,10 @@
           log('送信 ' + idx + '/' + chunks.length + '：受領 ' + r.accepted.length +
               ' 件' + (r.skipped.length ? ' / 除外 ' + r.skipped.length + ' 件' : '') +
               '（累計 ' + r.total_files + ' 件）');
-          (r.skipped || []).forEach(function (s) { log('  除外: ' + s.name + ' — ' + s.reason, 'err'); });
+          (r.skipped || []).forEach(function (s) {
+            state.skipped.push(s);   // アップロードの時点で受け付けなかったもの（バッチには入らない）
+            log('  除外: ' + s.name + ' — ' + s.reason, 'err');
+          });
           return next();
         });
     }
@@ -297,8 +338,23 @@
   function poll() {
     if (!state.batchId) { log('バッチがまだありません', 'err'); return; }
     var lk = $('loginkey').value.trim();
-    api('bulk_upload_status.php?loginkey=' + encodeURIComponent(lk) + '&batch_id=' + state.batchId)
+    api('bulk_upload_status.php?loginkey=' + encodeURIComponent(lk) + '&batch_id=' + state.batchId +
+        (state.noReview ? '&detail=1' : ''))
       .then(function (r) {
+        if (r.no_review) {
+          renderDirect(r);
+          $('batchStatus').textContent = r.batch_status;
+          $('counts').textContent = '登録 ' + r.done_files + ' / ' + r.total_files +
+                                    (r.error_files ? '　失敗 ' + r.error_files : '');
+          $('barFill').style.width = (r.total_files
+            ? Math.floor((r.done_files + r.error_files) * 100 / r.total_files) : 0) + '%';
+          markSteps(r.batch_status);
+          if (r.batch_status === 'DONE' || r.batch_status === 'ERROR') {
+            log('登録が終わりました: ' + (r.message || ''), r.error_files ? 'err' : 'ok');
+            stopPolling();
+          }
+          return;
+        }
         $('batchStatus').textContent = r.batch_status;
         $('counts').textContent = '完了 ' + r.done_files + ' / ' + r.total_files +
                                   (r.error_files ? '　失敗 ' + r.error_files : '');
@@ -347,6 +403,47 @@
           (r.summary.end_date_mismatch ? ' / 決算日の食い違い ' + r.summary.end_date_mismatch : '') + '）', 'ok');
     }).catch(function (e) { log(e.message, 'err'); });
   }
+
+  // 承認せず：ファイルごとの登録結果
+  function renderDirect(r) {
+    var label = { RECEIVED: '待ち', DETECTING: '登録中', DONE: '登録済み', ERROR: '失敗' };
+    var cls   = { RECEIVED: 'plain', DETECTING: 'warn', DONE: 'ok', ERROR: 'ng' };
+    var h = '<table><thead><tr><th>#</th><th>ファイル名</th><th>結果</th><th>案件ID / 理由</th></tr></thead><tbody>';
+    (r.files || []).forEach(function (f) {
+      h += '<tr><td class="num">' + f.seq + '</td><td>' + esc(f.name) + '</td>' +
+           '<td><span class="tag ' + (cls[f.status] || 'plain') + '">' + esc(label[f.status] || f.status) + '</span></td>' +
+           '<td>' + (f.status === 'DONE' ? esc(f.ai_case_id) :
+                     f.status === 'ERROR' ? '<span class="hint">' + esc(f.error_message) + '</span>' : '') + '</td></tr>';
+    });
+    state.skipped.forEach(function (s) {
+      h += '<tr><td class="num">—</td><td>' + esc(s.name) + '</td><td><span class="tag ng">受付不可</span></td>' +
+           '<td><span class="hint">' + esc(s.reason) + '（アップロードの時点で除外）</span></td></tr>';
+    });
+    h += '</tbody></table>';
+    $('directArea').innerHTML = h;
+  }
+
+  // バッチIDなしで、最近の失敗を取る（正式な画面が一覧に戻った後に使う想定のAPI）
+  $('btnFailures').addEventListener('click', function () {
+    var lk = $('loginkey').value.trim();
+    if (!lk) { log('loginkey を入力してください', 'err'); return; }
+    api('bulk_upload_failures.php?loginkey=' + encodeURIComponent(lk) + '&days=7').then(function (r) {
+      if (!r.count) {
+        $('failureArea').innerHTML = '<p class="hint">直近7日間に、案件にできなかったファイルはありません。</p>';
+        log('最近の失敗: 0 件', 'ok');
+        return;
+      }
+      var h = '<h3 style="font-size:14px;margin:12px 0 6px">最近の失敗（' + r.count + ' 件）</h3>' +
+              '<table><thead><tr><th>バッチ</th><th>#</th><th>ファイル名</th><th>理由</th><th>日時</th></tr></thead><tbody>';
+      r.files.forEach(function (f) {
+        h += '<tr><td>' + esc(f.batch_id) + (f.no_review ? '<br><span class="hint">承認せず</span>' : '') + '</td>' +
+             '<td class="num">' + f.seq + '</td><td>' + esc(f.name) + '</td>' +
+             '<td><span class="hint">' + esc(f.error_message) + '</span></td><td>' + esc(f.failed_at) + '</td></tr>';
+      });
+      $('failureArea').innerHTML = h + '</tbody></table>';
+      log('最近の失敗: ' + r.count + ' 件', 'err');
+    }).catch(function (e) { log(e.message, 'err'); });
+  });
 
   function esc(s) {
     return String(s === null || s === undefined ? '' : s)
