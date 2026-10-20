@@ -163,7 +163,7 @@
   'use strict';
 
   var $ = function (id) { return document.getElementById(id); };
-  var state = { batchId: null, files: [], timer: null, review: null, noReview: false, skipped: [] };
+  var state = { batchId: null, files: [], timer: null, review: null, noReview: false, skipped: [], notifiedBatch: null };
 
   // 承認せずのときは、確認・承認の欄を隠し、登録結果の欄を出す
   function applyMode(noReview) {
@@ -360,6 +360,7 @@
           if (r.batch_status === 'DONE' || r.batch_status === 'ERROR') {
             log('登録が終わりました: ' + (r.message || ''), r.error_files ? 'err' : 'ok');
             stopPolling();
+            notifyDirectDone(r);
           }
           return;
         }
@@ -409,6 +410,26 @@
           ' / 失敗 ' + r.summary.error +
           (r.summary.end_date_mismatch ? ' / 決算日の食い違い ' + r.summary.end_date_mismatch : '') + '）', 'ok');
     }).catch(function (e) { log(e.message, 'err'); });
+  }
+
+  // 承認せず：全件の登録が終わったら、一覧画面へ移るよう知らせる（1バッチにつき1回だけ）
+  function notifyDirectDone(r) {
+    if (state.notifiedBatch === state.batchId) return;
+    state.notifiedBatch = state.batchId;
+    // 表を最新にしてから知らせる（アラートは画面の更新を止めるため）
+    setTimeout(function () {
+      if (r.batch_status === 'ERROR') {
+        alert('登録の途中でエラーが発生しました。\n' + (r.message || '') +
+              '\n\n登録済みのものは一覧画面に出ています。この画面を閉じて、一覧画面を出してください。');
+        return;
+      }
+      var msg = 'この画面を閉じて、一覧画面を出してください。';
+      if (r.error_files) {
+        msg += '\n\n※ ' + r.error_files + ' 件は登録できませんでした（一覧には出ません）。' +
+               '\n閉じる前に、この画面の表で理由をご確認ください。';
+      }
+      alert(msg);
+    }, 0);
   }
 
   // 承認せず：ファイルごとの登録結果
