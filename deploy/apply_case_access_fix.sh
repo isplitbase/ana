@@ -53,8 +53,16 @@ MOD_FILES="ai_Diagnostics.php ana-aiocr-photo.php cash_ai.php cash_ai_02_excel.p
            financial_ai.php financial_ai_usepoint.php get_ai_response.php get_check_count.php
            get_upload_files_response.php report_generation.php report_show.php"
 
-# 修正前（2026-10-21 にサーバから取り込んだ版）の md5。do_ai.php だけ環境で内容が違う。
-if [ "$ENV" = 8012 ]; then DO_AI_MD5=d761d7ec2b7239385d69dc585bed3b55; else DO_AI_MD5=5027dd0be0b42afc4b8ed167f1e6e9ac; fi
+# 修正前（2026-10-21 にサーバから取り込んだ版）の md5。do_ai.php は環境で内容が違う。
+# 本番の report_generation.php は 2026-10-21 15:49 に KPI 修正（指摘5-(6)）だけ先に配置済み
+# （deploy/apply_numeric_fix.sh。元は b811ebb7 → ae474b4d）。会社チェックはその版に当てたもの。
+if [ "$ENV" = 8012 ]; then
+    DO_AI_MD5=d761d7ec2b7239385d69dc585bed3b55
+    RG_MD5=ae474b4d904ccd63375897b385caf562
+else
+    DO_AI_MD5=5027dd0be0b42afc4b8ed167f1e6e9ac
+    RG_MD5=b811ebb75068e881f49b00f5b90e1891
+fi
 EXPECTED="2c99c945d194c05a4d5c761dd24f456e  ai_Diagnostics.php
 d0bb61fa2a0e78bc055118346175c2ef  ana-aiocr-photo.php
 716933bc6b836c834710f3363dd5c987  cash_ai.php
@@ -70,7 +78,7 @@ c7130660e7072327ddd24bd93bc65eae  financial_ai.php
 28546337b3f9126f6ddb0378a337ec52  get_ai_response.php
 fc11c46141df08d7b526b508ab05b5c4  get_check_count.php
 a29ab2093d87fb051926f9638193d2ef  get_upload_files_response.php
-b811ebb75068e881f49b00f5b90e1891  report_generation.php
+$RG_MD5  report_generation.php
 3c973e627f51545778a70fff3e5e046b  report_show.php"
 
 echo "=== 配置先: $D ($ENV) ==="
