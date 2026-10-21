@@ -139,9 +139,11 @@ function bulk_wareki_to_year(string $text): ?int {
  * 整合チェック。
  *
  * 取得できるのは「年度」までで決算日(日付)は得られないため、
- * 日付単位の照合は行わず次の4点を見る。
+ * 日付単位の照合は行わず次の5点を見る。
  *
  *   UNDETECTED     判定できなかった（ラベルまたは年度が空）
+ *   PERIOD_UNKNOWN 判定した期の組み合わせから期区分（P1/P2/P3）を決められない
+ *                  （例：前々期だけ・前期だけ）。期区分が空のままだと承認できない
  *   YEAR_RANGE     年度が未来、または20年以上前
  *   LABEL_CONFLICT 同じラベルが重複している（今期が2つ等）
  *   DUPLICATE      バッチ内に同じファイル名＋同じ年度が既にある
@@ -153,6 +155,12 @@ function bulk_check_consistency(array $labels, array $years, string $originalNam
     if (!$labels || !$years) {
         return ['result' => 'NG', 'code' => 'UNDETECTED',
                 'message' => '帳票の期を判定できませんでした。確認画面で期を指定してください。'];
+    }
+
+    // 期区分は bulk_posting_period() で決めている。決められなかったものを OK にしない
+    if (bulk_posting_period($labels) === null) {
+        return ['result' => 'NG', 'code' => 'PERIOD_UNKNOWN',
+                'message' => '判定した期（' . implode('・', $labels) . '）から期区分を決められませんでした。期区分を選んでください。'];
     }
 
     if (count($labels) !== count(array_unique($labels))) {
