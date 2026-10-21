@@ -160,7 +160,7 @@ try {
         WHERE user_id = ?
         LIMIT 1
     ");
-    $stmt->bind_param("si", $new_password, $challenge_user_id);
+    $stmt->bind_param("si", $new_hash, $challenge_user_id);
     $stmt->execute();
     $stmt->close();
 

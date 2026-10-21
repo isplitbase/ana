@@ -1,5 +1,6 @@
 <?php
 require_once './common.php';
+require_once './ana_password_helper.php';
 
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
@@ -67,7 +68,7 @@ function generate_auto_password_10() {
 function send_add_user_mail_by_template($email, $name, $initial_password, $check_code, $auth, $company_cd, $password_note = '') {
     global $mail_smtp_user, $mail_smtp_password, $www_dir;
 
-	$activation_link = "https://corp.analygent.com/auth/activate?key=" . urlencode($check_code);
+	$activation_link = ana_front_url("auth/activate?key=" . urlencode($check_code));
 
     $template_path = $www_dir . "/sapis/mailtemplate_add_user";
     // フォールバック（共通テンプレートがある場合）
@@ -443,6 +444,9 @@ $point   = 3000;
 // status は -1（仮登録）
 $status = -1;
 
+// DB にはハッシュを保存する（初期パスワードの平文はメールで本人に送るだけ）
+$password_hash = ana_pw_hash($password);
+
 $conn->begin_transaction();
 
 try {
@@ -476,7 +480,7 @@ try {
         $stmt->bind_param(
             "ssssiiiii",
             $user_name,
-            $password,
+            $password_hash,
             $check_code,
             $company_cd,
             $auth,
@@ -526,7 +530,7 @@ try {
 	$stmt->bind_param(
 	  "ssisiisiiisi",
 	  $user_name,
-	  $password,
+	  $password_hash,
 	  $status,
 	  $email,
 	  $plan_id,

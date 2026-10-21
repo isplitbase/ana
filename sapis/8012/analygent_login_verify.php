@@ -235,6 +235,7 @@ write_system_log($conn, 'info', 'AUTH', 'LOGIN_SUCCESS', 'ログインしまし�
 // 8) 出力（要求どおり company_id/company_cd/company_name を含める）
 respond('success', 'ログインしました', [
     'loginkey'             => $loginkey,
+    'user_id'              => $user_id,
     'username'             => $username,
     'email'                => $email,
     'company_id'           => $company_id,
