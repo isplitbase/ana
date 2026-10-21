@@ -17,6 +17,7 @@
 
 require_once './common.php';
 require_once './system_log_helper.php';
+require_once './ana_password_helper.php';
 require './vendor/autoload.php';
 
 use PHPMailer\PHPMailer\PHPMailer;
@@ -139,7 +140,8 @@ $ip = $_SERVER['REMOTE_ADDR'] ?? '';
 $user_agent = $_SERVER['HTTP_USER_AGENT'] ?? '';
 
 // 1) ユーザー認証（users.company_cd で会社を特定）
-// ※ パスワードが平文比較の実装に合わせています（必要なら password_hash/verify に置き換えてください）
+// パスワードは SQL の条件にせず、取得した保存値と PHP で照合する。
+// 保存値がハッシュなら password_verify、ハッシュ化以前の平文なら比較して一致時にハッシュへ置き換える。
 $user = null;
 try {
     $stmt = $conn->prepare(
@@ -153,12 +155,18 @@ try {
             AND u.email      = ?
             AND u.status > 0
             AND u.type = 'Z'
-            AND u.password   = ?
-          LIMIT 1"
+          ORDER BY u.user_id"
     );
-    $stmt->bind_param('sss', $company_cd, $email, $password);
+    $stmt->bind_param('ss', $company_cd, $email);
     $stmt->execute();
-    $user = $stmt->get_result()->fetch_assoc();
+    $rs = $stmt->get_result();
+    while ($row = $rs->fetch_assoc()) {
+        if (ana_pw_verify_and_upgrade($conn, (int)$row['user_id'], $password, $row['password'] ?? null)) {
+            $user = $row;
+            break;
+        }
+    }
+    $stmt->close();
 } catch (Throwable $e) {
     respond('error', 'ログイン処理でエラーが発生しました', ['error_code' => 'SERVER_ERROR']);
 }
@@ -166,6 +174,7 @@ try {
 if (!$user) {
     respond('error', 'メールアドレスまたはパスワードが正しくありません', ['error_code' => 'INVALID_LOGIN']);
 }
+unset($user['password']);
 
 $user_id              = (int)$user['user_id'];
 $company_id           = (int)$user['company_id'];
@@ -174,7 +183,8 @@ $otp_enabled          = (int)($user['otp_enabled'] ?? 1); // デフォルトON
 $otp_required         = (int)($user['otp_required'] ?? 0); // テナントポリシー
 $auth                 = (int)($user['auth'] ?? 100);
 $bumon_id             = $user['bumon_id'] ?? null;
-$must_change_password = (int)($user['must_change_password'] ?? 0);
+// 列の値は 'YES' / 'NO'。(int) すると常に 0 になるため、login_verify と同じく真偽値で返す
+$must_change_password = ((string)($user['must_change_password'] ?? 'NO')) === 'YES';
 $billing_status       = (string)($user['billing_status'] ?? 'active');
 // is_platform_admin: company_id=0 かつ auth>=200 のユーザのみ true
 $is_platform_admin    = ($company_id === 0 && $auth >= 200);
@@ -210,6 +220,7 @@ if ($otp_enabled === 0 && $otp_required === 0) {
     respond('success', 'ログインしました', [
         'otp_required'        => false,
         'loginkey'            => $loginkey,
+        'user_id'             => $user_id,
         'username'            => $username,
         'email'               => $email,
         'company_id'          => $company_id,

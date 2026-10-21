@@ -1,5 +1,6 @@
 <?php
 require_once './common.php';
+require_once './ana_password_helper.php';
 
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
@@ -158,10 +159,17 @@ if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
     respond('error', '無効なメールアドレスです');
 }
 
-if (strlen($password) > 50) respond('error', 'パスワードは50文字以内にしてください');
-if (!preg_match('/^[\x21-\x7E]+$/', $password)) {
-    respond('error', 'パスワードは半角英数字記号のみで入力してください');
+// フリーメールは企業登録できない（フロントと同じ一覧。フロントを通らない呼び出しもここで止める）
+if (ana_is_free_email_domain(ana_email_domain($email))) {
+    respond('error', 'フリーメールアドレスは登録できません。企業ドメインのメールアドレスをご入力ください');
 }
+
+// パスワード条件（フロントと同じ：8〜50文字、半角英数字記号、英字・数字・記号を各1文字以上）
+$password_error = ana_pw_policy_error($password);
+if ($password_error !== null) {
+    respond('error', $password_error);
+}
+$password_hash = ana_pw_hash($password);
 
 if ($tel !== '') {
     $tel = to_halfwidth_digits($tel);
@@ -266,7 +274,7 @@ try {
         $stmt->bind_param(
             "sssssii",
             $username_for_users,
-            $password,
+            $password_hash,
             $check_code,
             $company_name,
             $address,
@@ -279,6 +287,24 @@ try {
             throw new Exception('update pending execute failed');
         }
         $stmt->close();
+
+        // 認証メールに載せる company_cd は仮登録時に発行済みのものを使う。
+        // 未発行の場合（古いデータなど）は、新規登録と同じ手順で発行してセットする。
+        $company_cd_for_mail = trim((string)($pending_company_cd_tmp ?? ''));
+        if ($company_cd_for_mail === '') {
+            $company_cd_for_mail = generate_company_cd($pending_company_id, $conn);
+            $stmt_cd = $conn->prepare("UPDATE users SET company_cd = ?, update_at = NOW(), update_user_id = NULL WHERE company_id = ? OR user_id = ?");
+            if (!$stmt_cd) {
+                throw new Exception('update pending company_cd prepare failed');
+            }
+            $pending_user_id_int = (int)$pending_user_id;
+            $stmt_cd->bind_param("sii", $company_cd_for_mail, $pending_company_id, $pending_user_id_int);
+            if (!$stmt_cd->execute()) {
+                $stmt_cd->close();
+                throw new Exception('update pending company_cd execute failed');
+            }
+            $stmt_cd->close();
+        }
 
         // UPDATE時は company_id は変えない（既存のまま）
         $conn->commit();
@@ -342,7 +368,7 @@ try {
     $stmt->bind_param(
         "ssssssi",
         $username_for_users,
-        $password,
+        $password_hash,
         $email,
         $check_code,
         $company_name,
@@ -388,7 +414,9 @@ try {
 
     $conn->commit();
 
-} catch (Exception $e) {
+} catch (Throwable $e) {
+    // このファイルの Exception は PHPMailer の Exception（use 文）なので、
+    // mysqli の例外も含めてロールバックするよう Throwable で受ける
     $conn->rollback();
     error_log("DB Transaction Error: " . $e->getMessage());
     respond('error', 'ユーザー仮登録に失敗しました（DB更新）');

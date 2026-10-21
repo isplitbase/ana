@@ -1,5 +1,6 @@
 <?php
 require_once './common.php';
+require_once './ana_password_helper.php';
 
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
@@ -443,6 +444,9 @@ $point   = 3000;
 // status は -1（仮登録）
 $status = -1;
 
+// DB にはハッシュを保存する（初期パスワードの平文はメールで本人に送るだけ）
+$password_hash = ana_pw_hash($password);
+
 $conn->begin_transaction();
 
 try {
@@ -476,7 +480,7 @@ try {
         $stmt->bind_param(
             "ssssiiiii",
             $user_name,
-            $password,
+            $password_hash,
             $check_code,
             $company_cd,
             $auth,
@@ -526,7 +530,7 @@ try {
 	$stmt->bind_param(
 	  "ssisiisiiisi",
 	  $user_name,
-	  $password,
+	  $password_hash,
 	  $status,
 	  $email,
 	  $plan_id,

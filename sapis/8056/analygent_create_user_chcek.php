@@ -45,7 +45,7 @@ $param_json = json_encode([
 
 // check_codeと一致するユーザーを検索
 $stmt = $conn->prepare("
-    SELECT user_id, username, email, create_at, company_id, company_cd, company_name, auth, bumon_id, billing_status
+    SELECT user_id, username, email, create_at, update_at, status, company_id, company_cd, company_name, auth, bumon_id, billing_status
     FROM users
     WHERE check_code = ?
     LIMIT 1
@@ -70,6 +70,43 @@ $company_name   = (string)($row['company_name'] ?? '');
 $auth           = (int)($row['auth'] ?? 0);
 $user_bumon_id  = (int)($row['bumon_id'] ?? 0);
 $billing_status = (string)($row['billing_status'] ?? '');
+$user_status    = (int)($row['status'] ?? 0);
+
+// -----------------------------
+// ★ 認証リンクの有効期限（24時間）
+// check_code の先頭14桁は発行日時（analygent_create_user.php の generate_check_code: date('YmdHis')）。
+// 読めない場合は仮登録の更新日時（無ければ作成日時）を発行日時とみなす。
+//
+// 例外：本登録済み（status > 0）でカード登録が未完了（email_verified / pending_payment）の企業は、
+// フロントがログインを通さず「メール認証リンクから再開」と案内しているため、期限後も再開を許す。
+// （ここで止めると、ログインも再登録もできなくなる）
+// -----------------------------
+$link_ttl_seconds = 24 * 60 * 60;
+$can_resume_card_register = ($user_status > 0 && in_array($billing_status, ['email_verified', 'pending_payment'], true));
+
+if (!$can_resume_card_register) {
+    $issued_ts = false;
+    if (preg_match('/^(\d{14})/', (string)$key, $m)) {
+        $issued_dt = DateTime::createFromFormat('YmdHis', $m[1]);
+        if ($issued_dt !== false) {
+            $issued_ts = $issued_dt->getTimestamp();
+        }
+    }
+    if ($issued_ts === false) {
+        $issued_ts = strtotime((string)($row['update_at'] ?? $row['create_at'] ?? ''));
+    }
+
+    if ($issued_ts === false || (time() - $issued_ts) > $link_ttl_seconds) {
+        if ($user_status > 0) {
+            respond('error', '認証リンクの有効期限（24時間）が切れています。登録は完了していますので、ログイン画面からログインしてください。', [
+                'error_code' => 'LINK_EXPIRED',
+            ]);
+        }
+        respond('error', '認証リンクの有効期限（24時間）が切れています。お手数ですが、企業登録画面からもう一度登録してください（同じメールアドレスで登録できます）。', [
+            'error_code' => 'LINK_EXPIRED',
+        ]);
+    }
+}
 
 // -----------------------------
 // ★ auth=300 以外は利用不可

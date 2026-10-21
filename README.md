@@ -28,3 +28,10 @@ Analygent 本体サーバ（GCP 34.180.79.93）の `sapis` 配下のうち、
 | `report_generation.php` | AI診断（レポート生成） |
 | `upload_files.php` | PDFアップロードと PDF→画像変換の起動 |
 | `ana-aiocr-photo.php` | 写真OCR（Cloud Run `ana-aiocr-photo`） |
+| `ana_password_helper.php` | users.password の保存（password_hash）と照合。平文の保存値はログイン時にハッシュへ置き換える。企業登録の入力チェック |
+| `analygent_login_start.php` / `analygent_login_verify.php` | ログイン（パスワード照合・OTP）。レスポンスに `user_id` を含む |
+| `analygent_create_user.php` / `analygent_create_user_chcek.php` | 企業登録と認証リンク（有効期限24時間） |
+| `analygent_add_user.php` / `analygent_repass_user_verify*.php` | ユーザー追加・パスワード再設定（ハッシュで保存） |
+
+パスワード関連の配置は `deploy/apply_password_hash.sh <8012|8056>`。
+配置先の現行ファイルが修正の元と違う場合は何もせず中止する。
