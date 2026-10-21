@@ -36,19 +36,9 @@ if (json_last_error() !== JSON_ERROR_NONE) {
 $loginkey = $data['loginkey'] ?? null;
 $ai_case_id = $data['ai_case_id'] ?? null;
 
-if($damy_flag!="OK"){
-    $user_id=null;
-    if (isset($loginkey)) {
-        $user_id=get_user_id_for_now($loginkey);
-        if($user_id==null){
-            echo json_encode([
-                "status" => "error",
-                "message" => "異常アクセス"
-            ]);
-            exit;
-        }
-    }
-}
+// ログイン必須 ＋ 案件が同じ会社のものか確認（loginkey が無い／他社の案件ならエラーで終了）
+require_once __DIR__ . "/_case_access_helper.php";
+$user_id = ana_require_case_access($loginkey, $ai_case_id);
 if (!isset($ai_case_id) || $ai_case_id==null) {
     echo json_encode([
         "status" => "error",

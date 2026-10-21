@@ -249,6 +249,10 @@ if ($damy_flag != 'OK') {
     }
 }
 
+// 案件が同じ会社のものか確認（他社の案件ならエラーで終了。_case_access_helper.php）
+require_once __DIR__ . "/_case_access_helper.php";
+ana_require_case_in_company($user_id ?? null, $ai_case_id, false, 403);
+
 $serviceAccountJsonPath = '/srv/www/apps/analygent_backend/internal/gen-lang-client-0018414550-f50b079b0584.json';
 
 $service_url_02 = 'https://ana-cash-ai-02-512697354748.asia-northeast1.run.app';

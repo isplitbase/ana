@@ -176,6 +176,10 @@ if (!isset($data['aiCaseId']) && isset($data['ai_case_id'])) {
     $data['aiCaseId'] = $data['ai_case_id'];
 }
 
+// 案件が同じ会社のものか確認（他社の案件ならエラーで終了。_case_access_helper.php）
+require_once __DIR__ . "/_case_access_helper.php";
+ana_require_case_in_company($user_id ?? null, $data['ai_case_id'] ?? null, false, 403);
+
 // postingPeriod が無い場合でも既存連携に合わせてキーは保持
 if (!array_key_exists('postingPeriod', $data)) {
     $data['postingPeriod'] = null;

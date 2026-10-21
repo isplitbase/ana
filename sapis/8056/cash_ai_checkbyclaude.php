@@ -167,6 +167,10 @@ if ($damy_flag != "OK") {
 
 $ai_case_id = $data['ai_case_id'] ?? null;
 
+// 案件が同じ会社のものか確認（他社の案件ならエラーで終了。_case_access_helper.php）
+require_once __DIR__ . "/_case_access_helper.php";
+ana_require_case_in_company($user_id ?? null, $ai_case_id, true, 403);
+
 $stmt = $conn->prepare("
     SELECT response,request,cf_main_html,cbc_cout,full_file_Paths
     FROM ai_case
@@ -357,7 +361,7 @@ $result = $stmt->get_result();
 
 if ($row = $result->fetch_assoc()) {
     $point = $row['point'];
-    $user_id= $row['id'];
+    $user_id = intval($row['user_id']);
 }
 
 $use_point = $point_check;

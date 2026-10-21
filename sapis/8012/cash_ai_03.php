@@ -319,6 +319,10 @@ if ($damy_flag != "OK") {
 $ai_case_id = $data['ai_case_id'] ?? null;
 $postingPeriod = $data['postingPeriod'] ?? null;
 
+// 案件が同じ会社のものか確認（他社の案件ならエラーで終了。_case_access_helper.php）
+require_once __DIR__ . "/_case_access_helper.php";
+ana_require_case_in_company($user_id ?? null, $ai_case_id, true, 403);
+
 /** =========================
  *  DBから financial_response を取得して data にセット（既存仕様維持）
  *  ========================= */

@@ -19,19 +19,9 @@ $loginkey = $data['loginkey'] ?? null;
 $ai_case_id = $data['ai_case_id'] ?? null;
 $user_input = $data['instruction'] ?? null;
 $nodoai = $data['nodoai'] ?? false;
-if($damy_flag!="OK"){
-    $user_id=null;
-    if (isset($loginkey)) {
-        $user_id=get_user_id_for_now($loginkey);
-        if($user_id==null){
-            echo json_encode([
-                "status" => "error",
-                "message" => "異常アクセス"
-            ]);
-            exit;
-        }
-    }
-}
+// ログイン必須 ＋ 案件が同じ会社のものか確認（loginkey が無い／他社の案件ならエラーで終了）
+require_once __DIR__ . "/_case_access_helper.php";
+$user_id = ana_require_case_access($loginkey, $ai_case_id);
 //割り算
 //v1÷v2
 function warizan($v1, $v2) {
@@ -577,15 +567,20 @@ $i=0;
 foreach ($report_data["response"] as $re) {
 	foreach ($financial_data["response"] as $fi) {
 		if($re['name'] == "売上成長率" and $fi["indicator"] == "売上高"){
-			$current_term=warizan($fi["current_term"],$fi["previous_term"]);
-			$previous_term=warizan($fi["previous_term"],$fi["previous_previous_term"]);
+			// 売上成長率 ＝ (今期 − 前期) ÷ 前期 × 100（グラフ「成長性 推移」と同じ計算）
+			$current_term=warizan2($fi["current_term"],$fi["previous_term"]);
+			$previous_term=warizan2($fi["previous_term"],$fi["previous_previous_term"]);
 			$report_data["response"][$i]["current_term"] = $current_term;
 			$report_data["response"][$i]["previous_term"] = $previous_term;
-		}else if($re['name'] == "営業利益率" and $fi["indicator"] == "営業利益"){
-			$current_term=warizan($fi["current_term"],$fi["previous_term"]);
-			$previous_term=warizan($fi["previous_term"],$fi["previous_previous_term"]);
-			$report_data["response"][$i]["current_term"] = $current_term;
-			$report_data["response"][$i]["previous_term"] = $previous_term;
+		}else if($re['name'] == "営業利益率" and $fi["indicator"] == "営業利益率"){
+			// 営業利益率 ＝ 営業利益 ÷ 売上高 × 100（グラフ「収益性 推移」と同じく、財務分析の「営業利益率」を使う）
+			if($fi["usage"]){
+				$report_data["response"][$i]["current_term"] = delete100($fi["current_term"]);
+				$report_data["response"][$i]["previous_term"] = delete100($fi["previous_term"]);
+			}else{
+				$report_data["response"][$i]["current_term"] = "";
+				$report_data["response"][$i]["previous_term"] = "";
+			}
 		}else if($re['name'] == "ROE" and $fi["indicator"] == "自己資本利益率（ROE）"){
 			if($fi["usage"]){
 				$current_term=delete100($fi["current_term"]);

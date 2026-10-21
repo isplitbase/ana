@@ -39,12 +39,12 @@ if (php_sapi_name() === 'cli') {
     }
     $ai_case_id = (int)$argv[1];
 } else {
-    $ai_case_id = (int)($_GET['ai_case_id'] ?? $_POST['ai_case_id'] ?? 0);
-    if ($ai_case_id <= 0) {
-        http_response_code(400);
-        echo json_encode(["status" => "error", "message" => "ai_case_id is required"], JSON_UNESCAPED_UNICODE);
-        exit(1);
-    }
+    // Web からの起動は受け付けない（do_ai.php が CLI で起動するだけ）。
+    // 以前は認証なしで ai_case_id を渡すだけで、任意の案件の OCR 実行（Claude/OpenAI の課金）と
+    // 読取結果の上書きができてしまっていた。
+    http_response_code(403);
+    echo json_encode(["status" => "error", "message" => "異常アクセス"], JSON_UNESCAPED_UNICODE);
+    exit(1);
 }
 if ($ai_case_id <= 0) {
     fwrite(STDERR, "Invalid ai_case_id: $ai_case_id\n");
