@@ -6,7 +6,7 @@
 #   ssh -i ~/.ssh/isplit.pem isplit@34.180.79.93 'bash -s' < deploy/apply_bulk_8012.sh
 #
 # 前提:
-#   /tmp/bulkdeploy/ に配置対象の13ファイルが置かれていること
+#   /tmp/bulkdeploy/ に配置対象のファイル（下の FILES）が置かれていること
 #   （bulk_*.php / bulk_cron.sh / index.html / bulk_upload_schema.sql）
 #
 # 行うこと:
@@ -27,7 +27,7 @@ D12=/srv/www/apps/analygent_backend/releases/20251117-0946_8012
 
 FILES="bulk_analyze.php bulk_common.php bulk_cron.sh bulk_detect.php bulk_direct.php
        bulk_upload_add.php bulk_upload_approve.php bulk_upload_close.php
-       bulk_upload_init.php bulk_upload_review.php bulk_upload_status.php bulk_upload_failures.php
+       bulk_upload_init.php bulk_upload_review.php bulk_upload_status.php bulk_upload_failures.php bulk_upload_pending.php
        bulk_worker.php index.html bulk_upload_schema.sql"
 
 echo "--- 1/5 事前確認 ---"

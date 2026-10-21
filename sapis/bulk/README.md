@@ -197,6 +197,7 @@ grep -rn "【1案件=1ファイル前提】" sapis/bulk
 | `bulk_cron.sh` | ワーカーを既定本数まで起動する |
 | `bulk_upload_init.php` 〜 `bulk_upload_approve.php` | Web API 6本 |
 | `bulk_upload_failures.php` | 最近の失敗の一覧（バッチIDなしで取れる） |
+| `bulk_upload_pending.php` | 自分の「確認してから登録」で終わっていないバッチの一覧（確認待ちの件数つき）。画面を読み直しても承認を続けられるよう、ポップアップを開くときに呼ぶ |
 
 ## 配置
 
