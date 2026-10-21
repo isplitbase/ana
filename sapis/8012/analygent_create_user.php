@@ -24,9 +24,9 @@ function respond($status, $message, $extra = []) {
 }
 
 function generate_check_code() {
-    $str = '1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPUQRSTUVWXYZ';
-    $str_r = substr(str_shuffle($str), 0, 15);
-    return date('YmdHis') . $str_r;
+    // 先頭14桁は発行日時（analygent_create_user_chcek.php の有効期限判定で使う）。
+    // 残りは暗号論的に安全な乱数（users.check_code は varchar(40)：14 + 24 = 38文字）
+    return date('YmdHis') . bin2hex(random_bytes(12));
 }
 
 function generate_company_cd($company_id, $conn) {
