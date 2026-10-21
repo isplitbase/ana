@@ -68,7 +68,7 @@ REGEX_RULES: List[Tuple[str, str, str, str]] = [
     ("R011", r"^(?:営業外収益|営業外収入)$", "営業外収益", "I"),
     ("R012", r"^(?:営業外費用)$", "営業外費用", "I"),
     ("R013", r"^(?:経常利益)$", "経常利益", "I"),
-    ("R016", r"^(?:税引前|税金等調整前)(?:当期|当年度)?(?:純)?(?:利益|損益|損失)(?:金額)?(?:損失)?$", "税引前利益", "I"),
+    ("R016", r"^(?:税引前|税金等調整前)(?:当期|当年度)?(?:純)?(?:利益|損益|損失)(?:金額)?(?:[△▲]?損失)?$", "税引前利益", "I"),
     ("R017", r"^(?:当期純利益|当期利益)$", "当期純利益", "I"),
     # ▼▼▼ 修正点：支払利息の前方一致を許容（末尾に任意文字）
     ("R022", r"^(?:支払利息|支払利子).*$", "支払利息", "I"),
@@ -123,26 +123,48 @@ def to_canonical(name: str) -> str:
             return rep
     return name or ""
 
+# 損失だけを表す科目名か（例: 税引前当期純損失・税金等調整前当期純損失）。
+# 「税引前当期純利益（損失）」「…純損益」のように利益と兼ねる科目は、金額の符号どおりに扱うので対象外。
+LOSS_SIGN_TARGETS = ("税引前利益",)
+# 決算書に1行しかない項目（複数の行が一致しても合算しない）
+FIRST_ROW_ONLY = ("税引前利益",)
+def is_loss_only_label(canon: str, name: str) -> bool:
+    if canon not in LOSS_SIGN_TARGETS:
+        return False
+    pre = pre_normalize(name or "")
+    return "損失" in pre and "利益" not in pre and "損益" not in pre
+
 # ---- JSON 読込・インデックス化 ----
 def load_bspl(path: str) -> Dict[str, Dict[str, int]]:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     idx: Dict[str, Dict[str, int]] = {}
-    def add(canon: str, period: str, amount):
+    seen_first = set()
+    def add(canon: str, period: str, amount, loss_label: bool = False):
         if amount in (None, ""): return
         try:
             v = int(str(amount).replace(",", ""))
         except Exception:
             return
+        # 「税引前当期純損失」のように損失だけを表す科目で金額がプラスなら、損失として負にする
+        if loss_label and v > 0:
+            v = -v
+        # 決算書に1行しかない項目は、同じ期に複数の行があっても最初の行だけを使う
+        # （同じ数字を「税引前当期利益」「税引前当期純利益」の2行として読み取った場合に2倍にしない）
+        if canon in FIRST_ROW_ONLY and v != 0:
+            if (canon, period) in seen_first:
+                return
+            seen_first.add((canon, period))
         idx.setdefault(canon, {"今期":0, "前期":0, "前々期":0})
         idx[canon][period] += v
 
     for sec in ("PL","BS"):
         for row in data.get(sec, []):
             canon = to_canonical(row.get("勘定科目"))
+            loss_label = is_loss_only_label(canon, row.get("勘定科目"))
             for period in ("今期","前期","前々期"):
-                add(canon, period, (row.get(period) or {}).get("金額"))
+                add(canon, period, (row.get(period) or {}).get("金額"), loss_label)
 
     # 補完
     def ensure_sum(target: str, parts: List[str]):
