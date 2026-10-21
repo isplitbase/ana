@@ -1,5 +1,6 @@
 <?php
 require_once './common.php';
+require_once './ana_password_helper.php';
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
@@ -38,9 +39,9 @@ function gen_key(): string {
  */
 function send_repass_mail_by_template_local($email, $name, $check_code, $company_cd, $password_note = '',$must_change_password) {
     global $mail_smtp_user, $mail_smtp_password, $www_dir;
-	$repass_link = "https://corp.analygent.com/auth/reset-password?key=" . urlencode($check_code);
+	$repass_link = ana_front_url("auth/reset-password?key=" . urlencode($check_code));
 	if($must_change_password=="YES"){
-		$repass_link = "https://corp.analygent.com/auth/first-password-change?key=" . urlencode($check_code);
+		$repass_link = ana_front_url("auth/first-password-change?key=" . urlencode($check_code));
 	}
 
     $template_path = $www_dir . "/sapis/mailtemplate_repass";

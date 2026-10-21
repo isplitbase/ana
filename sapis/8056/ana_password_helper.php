@@ -14,7 +14,24 @@
  *   平文（ハッシュ化以前に保存された値）→ hash_equals で比較し、
  *   一致したらその場でハッシュに置き換える（利用者にパスワード変更は求めない）。
  * - パスワードは最大50文字のため、平文がハッシュ形式（60文字以上）と誤判定されることはない。
+ *
+ * メールに載せる画面のリンク:
+ * - ana_front_url() で環境に合わせた URL を作る（本番 8012 は $front、それ以外は $testfront）。
  */
+
+/**
+ * メールに載せる画面のリンク（例: ana_front_url('auth/activate?key=...')）。
+ * common.php の $port で環境を見分ける。$front は両環境とも本番の URL なので、
+ * 本番（8012）以外は $testfront（https://corp.analygent.com:<port>/）を使う。
+ */
+function ana_front_url(string $path): string {
+    global $port, $front, $testfront;
+    $base = ((int)$port === 8012) ? (string)$front : (string)$testfront;
+    if ($base === '') {
+        $base = 'https://corp.analygent.com/';
+    }
+    return rtrim($base, '/') . '/' . ltrim($path, '/');
+}
 
 /** フリーメールのドメイン（フロント company-register.ts の FREE_EMAIL_DOMAINS と同じ一覧） */
 const ANA_FREE_EMAIL_DOMAINS = [
@@ -79,11 +96,12 @@ function ana_pw_verify_and_upgrade(mysqli $conn, int $user_id, string $plain, ?s
 /**
  * 保存値を置き換える。照合したときの値のままの行だけを更新する
  * （照合と同時にパスワードが変更されていた場合に、古いパスワードで上書きしないため）。
- * update_at / update_user_id は利用者の操作ではないので変えない。
+ * update_at / update_user_id は利用者の操作ではないので変えない
+ * （update_at は ON UPDATE CURRENT_TIMESTAMP のため、update_at = update_at で自動更新を止める）。
  */
 function ana_pw_replace_stored(mysqli $conn, int $user_id, string $old_stored, string $new_hash): void {
     try {
-        $stmt = $conn->prepare("UPDATE users SET password = ? WHERE user_id = ? AND password = ? LIMIT 1");
+        $stmt = $conn->prepare("UPDATE users SET password = ?, update_at = update_at WHERE user_id = ? AND password = ? LIMIT 1");
         if (!$stmt) {
             error_log("ana_pw_replace_stored: prepare failed user_id={$user_id}");
             return;

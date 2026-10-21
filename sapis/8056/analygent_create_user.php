@@ -60,7 +60,7 @@ function generate_company_cd($company_id, $conn) {
 function send_activation_mail($email, $name, $check_code, $company_cd) {
     global $mail_smtp_user, $mail_smtp_password, $www_dir;
 
-    $activation_link = "https://corp.analygent.com/auth/company-activate?key=" . urlencode($check_code);
+    $activation_link = ana_front_url("auth/company-activate?key=" . urlencode($check_code));
 
     $template_path = $www_dir . "/sapis/mailtemplate";
     if (!file_exists($template_path)) {
