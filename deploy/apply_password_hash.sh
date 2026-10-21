@@ -10,6 +10,7 @@
 #            sapis/8056/analygent_login_verify.php sapis/8056/analygent_repass_user_verify.php \
 #            sapis/8056/analygent_repass_user_verify_updated.php \
 #            sapis/8056/analygent_repass_user_start.php sapis/8056/analygent_repass_user_start_nologin.php \
+#            sapis/8056/analygent_add_user_chcek.php \
 #            isplit@34.180.79.93:/tmp/pwdeploy/
 #      （先に ssh ... 'mkdir -p /tmp/pwdeploy' ）
 #   2) 配置先を引数で指定して実行
@@ -48,14 +49,17 @@ NEW_FILE="ana_password_helper.php"
 FILES="analygent_add_user.php analygent_create_user.php analygent_create_user_chcek.php
        analygent_login_start.php analygent_login_verify.php
        analygent_repass_user_verify.php analygent_repass_user_verify_updated.php
-       analygent_repass_user_start.php analygent_repass_user_start_nologin.php"
+       analygent_repass_user_start.php analygent_repass_user_start_nologin.php
+       analygent_add_user_chcek.php"
 
 # 上書きしてよい現行ファイルの md5（空白区切り）
 #   1つ目: 修正の元（2026-10-21 時点。8012 と 8056 で同一）
-#   2つ目以降: 開発(8056)に配置済みの1回目の版（2026-10-21 14:02、コミット 1bcb87e）
+#   2つ目以降: これまでに配置した版
+#     （1bcb87e: 8056 14:02 ／ b4ee83c: 8056 14:41・8012 14:56）
 declare -A ORIG_MD5=(
-    [analygent_add_user.php]="ff8937c16342b68852df9b17bb178c47 69253f415e4608e8916e26e77da393ab"
-    [analygent_create_user.php]="f7080accf15b615ec5f62c7cf40621e8 5aa508034412d09d2449e8811d2eb6ff"
+    [analygent_add_user.php]="ff8937c16342b68852df9b17bb178c47 69253f415e4608e8916e26e77da393ab 31c02a72dfbd85a051a2aa499ac6cda6"
+    [analygent_create_user.php]="f7080accf15b615ec5f62c7cf40621e8 5aa508034412d09d2449e8811d2eb6ff 22288bd1709ff46821797bdbd3e828ba"
+    [analygent_add_user_chcek.php]="33df665303988d239dc9bc716422cb05"
     [analygent_create_user_chcek.php]="b6b3ab80381e8149efcb13a48c7291a6 0dcdca8ab7d3b9c40c5a0f593f697c5a"
     [analygent_login_start.php]="57c3864831238a64cff5baf85ac04e18 2ac217adcf5a24f7dce546afa824ca67"
     [analygent_login_verify.php]="f8e668620c6da5d1476623bb9a247cb6 8e32970ba80a9941a6d1ba156e3d6b2a"
@@ -64,8 +68,8 @@ declare -A ORIG_MD5=(
     [analygent_repass_user_start.php]="99e0961cea3b0519df5454ba8b57a7dc"
     [analygent_repass_user_start_nologin.php]="5229abbfc7d8734ca6a5100427166224"
 )
-# 共通関数ファイルを上書きしてよい場合の md5（開発に配置済みの1回目の版）
-HELPER_PREV_MD5="32517699826d22bd3b4893486c1653a8"
+# 共通関数ファイルを上書きしてよい場合の md5（これまでに配置した版）
+HELPER_PREV_MD5="32517699826d22bd3b4893486c1653a8 96b8dbb9c5fcf109b3fc82f2954300e3"
 
 echo "=== 配置先: $ENV -> $D ==="
 
@@ -93,8 +97,8 @@ for f in $FILES; do
 done
 if [ -f "$D/sapis/$NEW_FILE" ] && ! cmp -s "$D/sapis/$NEW_FILE" "$S/$NEW_FILE"; then
     cur="$(md5sum "$D/sapis/$NEW_FILE" | cut -d' ' -f1)"
-    if [ "$cur" = "$HELPER_PREV_MD5" ]; then
-        echo "OK（1回目の版を更新）: $NEW_FILE"
+    if [[ " $HELPER_PREV_MD5 " == *" $cur "* ]]; then
+        echo "OK（配置済みの版を更新）: $NEW_FILE"
     else
         echo "NG（同名の別ファイルがある）: $NEW_FILE"
         NG=1

@@ -94,6 +94,13 @@ if ($expires_at !== '' && $expires_at < $now) {
     respond('error', '認証に失敗しました（有効期限切れです）', ['error_code' => 'EXPIRED']);
 }
 
+// OTP の試行回数の上限（6桁の総当たり対策）。上限に達した OTP は使えない。
+// 新しい OTP は再送（login_start）で発行され、回数もリセットされる（送信は 1分1回・10分5回まで）。
+$otp_max_fail = 5;
+if ($fail_count >= $otp_max_fail) {
+    respond('error', 'OTPの入力に' . $otp_max_fail . '回失敗したため、このOTPは使えません。認証コードを再送して、新しいコードを入力してください。', ['error_code' => 'OTP_LOCKED']);
+}
+
 // 2) OTP検証（既存処理維持）
 $otp_ok = password_verify($otp_code, (string)$ch['otp_hash']);
 if (!$otp_ok) {
@@ -122,6 +129,9 @@ if (!$otp_ok) {
         detail:     ['fail_count' => $new_fail_count, 'challenge_id' => $challenge_id]
     );
 
+    if ($new_fail_count >= $otp_max_fail) {
+        respond('error', 'OTPの入力に' . $otp_max_fail . '回失敗したため、このOTPは使えません。認証コードを再送して、新しいコードを入力してください。', ['error_code' => 'OTP_LOCKED']);
+    }
     respond('error', '認証に失敗しました（OTPが不正です）', ['error_code' => 'INVALID_OTP']);
 }
 

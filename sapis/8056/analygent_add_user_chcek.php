@@ -27,10 +27,8 @@ if (!$key) {
 	respond('error', '認証が失敗しました（キーがありません）');
 }
 
-// loginkey作成
-$str = '1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPUQRSTUVWXYZ';
-$str_r = substr(str_shuffle($str), 0, 20);
-$loginkey = date('YmdHis') . $str_r;
+// loginkey作成（login_start と同じく暗号論的に安全な乱数で作る）
+$loginkey = bin2hex(random_bytes(32));
 
 // IPとユーザーエージェントの取得
 $ip = $_SERVER['REMOTE_ADDR'] ?? '';
@@ -41,7 +39,7 @@ $param_json = json_encode([
 ], JSON_UNESCAPED_UNICODE);
 
 // check_codeと一致するユーザーを検索（必要情報も取得）
-$stmt = $conn->prepare("SELECT user_id, username, email, create_at, company_id, company_cd, bumon_id,auth FROM users WHERE check_code = ?");
+$stmt = $conn->prepare("SELECT user_id, username, email, create_at, company_id, company_cd, bumon_id, auth, status FROM users WHERE check_code = ?");
 $stmt->bind_param("s", $key);
 $stmt->execute();
 $result = $stmt->get_result();
@@ -58,6 +56,17 @@ $auth = $row['auth'];
 $company_cd = $row['company_cd'];
 $company_id = isset($row['company_id']) ? (int)$row['company_id'] : -1;
 $bumon_id   = isset($row['bumon_id']) ? (int)$row['bumon_id'] : 0;
+
+// ==============================
+// 招待リンクは仮登録（status = -1）のときの1回だけ有効。
+// 使用後は check_code を消す（下の UPDATE）。本登録済み・削除済み・停止中のユーザーは、
+// 古いリンクで loginkey を発行したり status を 100 に戻したりしない。
+// ==============================
+if ((int)($row['status'] ?? 0) !== -1) {
+	respond('error', 'この招待リンクは使用済みか、無効になっています。登録済みの場合はログイン画面からログインしてください。', [
+		'error_code' => 'LINK_USED',
+	]);
+}
 
 // ==============================
 // ✅ 追加：部門が削除されていないかチェック
@@ -92,18 +101,25 @@ if ($bumon_id > 0) {
 $conn->begin_transaction();
 
 try {
+	// users.statusを100に更新し、招待リンク（check_code）を無効にする
+	// （同じリンクが同時に開かれた場合、更新できた1回だけを通す）
+	$stmt_update = $conn->prepare("UPDATE users SET status = 100, check_code = NULL, update_user_id = NULL WHERE user_id = ? AND status = -1");
+	$stmt_update->bind_param("i", $user_id);
+	$stmt_update->execute();
+	if ($stmt_update->affected_rows !== 1) {
+		$conn->rollback();
+		respond('error', 'この招待リンクは使用済みか、無効になっています。登録済みの場合はログイン画面からログインしてください。', [
+			'error_code' => 'LINK_USED',
+		]);
+	}
+
 	// login_history に記録（param付き）
 	$stmt_insert = $conn->prepare("
-		INSERT INTO login_history (user_id, loginkey, create_at, status, param) 
+		INSERT INTO login_history (user_id, loginkey, create_at, status, param)
 		VALUES (?, ?, NOW(), 'OK', ?)
 	");
 	$stmt_insert->bind_param("iss", $user_id, $loginkey, $param_json);
 	$stmt_insert->execute();
-
-	// users.statusを100に更新
-	$stmt_update = $conn->prepare("UPDATE users SET status = 100, update_user_id = NULL WHERE user_id = ?");
-	$stmt_update->bind_param("i", $user_id);
-	$stmt_update->execute();
 
 	// コミット
 	$conn->commit();

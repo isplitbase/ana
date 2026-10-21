@@ -30,10 +30,8 @@ if (!$key) {
     respond('error', '認証が失敗しました（キーがありません）');
 }
 
-// loginkey作成
-$str = '1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPUQRSTUVWXYZ';
-$str_r = substr(str_shuffle($str), 0, 20);
-$loginkey = date('YmdHis') . $str_r;
+// loginkey作成（login_start と同じく暗号論的に安全な乱数で作る）
+$loginkey = bin2hex(random_bytes(32));
 
 // IPとユーザーエージェント
 $ip = $_SERVER['REMOTE_ADDR'] ?? '';
@@ -84,6 +82,14 @@ $user_status    = (int)($row['status'] ?? 0);
 $link_ttl_seconds = 24 * 60 * 60;
 $can_resume_card_register = ($user_status > 0 && in_array($billing_status, ['email_verified', 'pending_payment'], true));
 
+// 使えるのは「初回の本登録（status = -1）」と「カード登録の再開」だけ。
+// 登録が済んだ企業（カード登録完了・停止中・削除済みなど）の古いリンクでは loginkey を発行しない。
+if ($user_status !== -1 && !$can_resume_card_register) {
+    respond('error', 'この認証リンクは使用済みです。登録は完了していますので、ログイン画面からログインしてください。', [
+        'error_code' => 'LINK_USED',
+    ]);
+}
+
 if (!$can_resume_card_register) {
     $issued_ts = false;
     if (preg_match('/^(\d{14})/', (string)$key, $m)) {
@@ -97,11 +103,6 @@ if (!$can_resume_card_register) {
     }
 
     if ($issued_ts === false || (time() - $issued_ts) > $link_ttl_seconds) {
-        if ($user_status > 0) {
-            respond('error', '認証リンクの有効期限（24時間）が切れています。登録は完了していますので、ログイン画面からログインしてください。', [
-                'error_code' => 'LINK_EXPIRED',
-            ]);
-        }
         respond('error', '認証リンクの有効期限（24時間）が切れています。お手数ですが、企業登録画面からもう一度登録してください（同じメールアドレスで登録できます）。', [
             'error_code' => 'LINK_EXPIRED',
         ]);
