@@ -47,12 +47,12 @@ if ($damy_flag != "OK") {
     }
 }
 
-// ログインユーザの auth チェック
+// ログインユーザの auth チェック（画面と同じく、マスター管理者（auth 300）のみ設定可）
 $stmt_auth = $conn->prepare("SELECT auth FROM users WHERE user_id = ?");
 $stmt_auth->bind_param("i", $user_id);
 $stmt_auth->execute();
 $auth_row = $stmt_auth->get_result()->fetch_assoc();
-if (!$auth_row || (int)$auth_row['auth'] < 200) {
+if (!$auth_row || (int)$auth_row['auth'] !== 300) {
     echo json_encode(["status" => "error", "message" => "権限がありません"]);
     exit;
 }
