@@ -7,6 +7,7 @@ else if (file_exists($autoload2)) { require_once $autoload2; }
 
 include "./common.php";
 include "./_ai_case_list_helper.php";
+include "./_delete_gcs_helper.php";
 global $conn;
 global $damy_flag;
 global $gcs_bucket;
@@ -153,131 +154,38 @@ foreach ($delete_case_list as $ai_case_id) {
 }
 
 // ---- フェーズ3: GCS物理削除 ----
+// 2026-10-21 裏で行うように変更。
+//   1案件に PDF・ページ画像・作業画像が数十〜数百あり、1つずつ消すため、
+//   ここで消すと20件以上の一括削除で1分以上応答が返らず、画面がずっと処理中になっていた。
+//   DB は上で論理削除済みなので、画面にはもう出ない。GCS は delete_cases_gcs.php が裏で消す。
+//   裏で起動できないときだけ、これまでどおりここで消す。
 $gcs_delete_results = [];
-foreach ($delete_case_list as $ai_case_id) {
-    $ai_case_id   = (int)$ai_case_id;
-    $gcs_data     = $case_data_map[$ai_case_id] ?? [];
-    $full_paths   = $gcs_data['full_file_Paths'] ?? '';
-    $img_urls     = $gcs_data['img_urls'] ?? '';
+$gcs_worker = __DIR__ . '/delete_cases_gcs.php';
+$gcs_ids    = array_map('intval', $delete_case_list);
+$gcs_php    = is_executable('/usr/bin/php') ? '/usr/bin/php' : 'php';
+$gcs_kicked = false;
+if (is_file($gcs_worker) && function_exists('exec')) {
+    exec('nohup ' . escapeshellarg($gcs_php) . ' ' . escapeshellarg($gcs_worker) . ' '
+         . implode(' ', $gcs_ids) . ' > /dev/null 2>&1 &', $gcs_out, $gcs_rc);
+    $gcs_kicked = ($gcs_rc === 0);
+}
+if (!$gcs_kicked) {
+    foreach ($gcs_ids as $ai_case_id) {
+        $gcs_data   = $case_data_map[$ai_case_id] ?? [];
+        $full_paths = $gcs_data['full_file_Paths'] ?? '';
+        $img_urls   = $gcs_data['img_urls'] ?? '';
 
-    $result = delete_gcs_files_for_case($ai_case_id, $full_paths, $img_urls);
-    $gcs_delete_results[$ai_case_id] = $result;
+        $result = delete_gcs_files_for_case($ai_case_id, $full_paths, $img_urls);
+        $gcs_delete_results[$ai_case_id] = $result;
+    }
 }
 
 // ---- フェーズ4: 削除後のリストをレスポンス ----
 $response = build_ai_case_list_response($conn, $user_id, $row_start, $row_end, $search_text);
 $response['deleted_count']      = count($delete_case_list);
-$response['gcs_delete_results'] = $gcs_delete_results;
+$response['gcs_delete_results'] = $gcs_delete_results;   // 裏で消すときは空
+$response['gcs_delete_mode']    = $gcs_kicked ? 'background' : 'inline';
 
 echo json_encode($response, JSON_UNESCAPED_UNICODE);
 exit;
 
-
-// =========================================================
-// GCSファイル物理削除関数
-// =========================================================
-/**
- * 1案件のGCSファイルを物理削除する
- *
- * 削除対象:
- *   1. full_file_Paths / img_urls に含まれる gs:// URI
- *   2. バケット内プレフィックス "{ai_case_id}-" （PDFファイル）
- *   3. バケット内プレフィックス "converted/{ai_case_id}-" （変換済み画像）
- *
- * @param int    $ai_case_id
- * @param string $full_file_Paths_str  DB の full_file_Paths（|,| 区切り）
- * @param string $img_urls_str         DB の img_urls（|,| 区切り）
- * @return array ["deleted" => [...], "errors" => [...]]
- */
-function delete_gcs_files_for_case($ai_case_id, $full_file_Paths_str, $img_urls_str) {
-    global $gcs_bucket;
-    global $google_application_credentials;
-
-    $deleted = [];
-    $errors  = [];
-
-    if (empty($gcs_bucket)) {
-        return ["deleted" => $deleted, "errors" => ["gcs_bucket未設定のためGCS削除をスキップ"]];
-    }
-
-    if (!class_exists("\\Google\\Cloud\\Storage\\StorageClient")) {
-        return ["deleted" => $deleted, "errors" => ["google/cloud-storage未読込のためGCS削除をスキップ"]];
-    }
-
-    if (!empty($google_application_credentials)) {
-        putenv("GOOGLE_APPLICATION_CREDENTIALS=" . $google_application_credentials);
-    }
-
-    try {
-        $storage = new \Google\Cloud\Storage\StorageClient();
-        $bucket  = $storage->bucket($gcs_bucket);
-    } catch (Exception $e) {
-        return ["deleted" => $deleted, "errors" => ["GCSクライアント初期化失敗: " . $e->getMessage()]];
-    }
-
-    // ── 1. gs:// URI を直接削除 ──
-    $all_paths = [];
-    if (!empty($full_file_Paths_str)) {
-        foreach (explode('|,|', $full_file_Paths_str) as $p) {
-            $all_paths[] = trim($p);
-        }
-    }
-    if (!empty($img_urls_str)) {
-        foreach (explode('|,|', $img_urls_str) as $p) {
-            $all_paths[] = trim($p);
-        }
-    }
-
-    foreach ($all_paths as $path) {
-        if (!preg_match('#^gs://([^/]+)/(.+)$#', $path, $m)) {
-            continue; // ローカルパスやS3パスはスキップ
-        }
-        $obj_bucket = $m[1];
-        $obj_name   = $m[2];
-        if ($obj_bucket !== $gcs_bucket) {
-            continue; // 別バケットはスキップ
-        }
-        try {
-            $bucket->object($obj_name)->delete();
-            $deleted[] = $path;
-        } catch (\Google\Cloud\Core\Exception\NotFoundException $e) {
-            // 既に存在しない場合は無視
-        } catch (Exception $e) {
-            $errors[] = $path . ": " . $e->getMessage();
-        }
-    }
-
-    // ── 2. プレフィックスによる一括削除 ──
-    // PDFファイル: {ai_case_id}-{fileKey}.pdf
-    // 変換済み画像: converted/{ai_case_id}-{fileKey}-page*.png
-    $prefixes = [
-        (string)$ai_case_id . "-",
-        "converted/" . $ai_case_id . "-",
-        // 2026-10-14 追加: pdf-converter の旧リビジョンが作っていた中間ファイル
-        //   converted/converted_{ai_case_id}-{fileKey}-NNN_mini.png
-        //   は上の前方一致（converted/{id}-）に一致せず削除されずに残っていた。
-        //   2026-08-27 以降は生成されないが、過去分が GCS に残存するため対象に加える。
-        "converted/converted_" . $ai_case_id . "-",
-    ];
-
-    foreach ($prefixes as $prefix) {
-        try {
-            $objects = $bucket->objects(['prefix' => $prefix]);
-            foreach ($objects as $object) {
-                $name = $object->name();
-                try {
-                    $object->delete();
-                    $deleted[] = "gs://{$gcs_bucket}/{$name}";
-                } catch (\Google\Cloud\Core\Exception\NotFoundException $e) {
-                    // 既に削除済み
-                } catch (Exception $e) {
-                    $errors[] = "gs://{$gcs_bucket}/{$name}: " . $e->getMessage();
-                }
-            }
-        } catch (Exception $e) {
-            $errors[] = "prefix={$prefix}: " . $e->getMessage();
-        }
-    }
-
-    return ["deleted" => $deleted, "errors" => $errors];
-}
