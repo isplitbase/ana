@@ -7,7 +7,7 @@
  *   loginkey : ログイン中のキー
  *   action   : "on" | "off"
  *
- * 権限: users.auth > 100 (MasterAdmin=200 or Admin=300)
+ * 権限: users.auth > 100 (Admin=200 or MasterAdmin=300)
  */
 
 require_once './common.php';

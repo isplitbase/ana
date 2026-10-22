@@ -1106,6 +1106,8 @@ if (!empty($GLOBALS["enable_pdf_converter_api"]) && $GLOBALS["enable_pdf_convert
 
     } catch (Exception $e) {
         ana_cloud_run_job_log("PDF_CONVERTER_API ERROR " . $e->getMessage());
+        // 変換を依頼できていないので、後段の UPDATE で 'AIERR' にする（'UPST'「帳票識別中」のまま残さない）
+        $GLOBALS["pdf_converter_failed"] = true;
     }
 }
 

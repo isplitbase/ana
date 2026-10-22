@@ -13,7 +13,7 @@
  *   feature          : 任意 / 機能フィルタ (cashflow_analysis / ai_report / financial_analysis / data_read / analysis_check)
  *   department_id    : 任意 / 部門ID
  *   user_id          : 任意 / ユーザーID（テナント内のみ）
- *   execution_status : 任意 / success / failed
+ *   execution_status : 任意 / success / failure（failed も failure として受け付ける）
  *   page             : 任意 / ページ番号（デフォルト1）
  *   per_page         : 任意 / 件数（デフォルト20、最大100）
  */
@@ -158,9 +158,14 @@ if ($feature_filter !== '' && !in_array($feature_filter, $valid_features, true))
     respond_history('error', ['message' => 'feature の値が不正です'], 400);
 }
 
-$valid_exec_statuses = ['success', 'failed'];
+// 失敗は usede に 'failure' で記録される（マイページの get_my_usage_history.php と同じ）。
+// 'failed' も同じ意味として受け付ける（今の管理画面は 'failed' を送るため）
+if ($exec_status === 'failed') {
+    $exec_status = 'failure';
+}
+$valid_exec_statuses = ['success', 'failure'];
 if ($exec_status !== '' && !in_array($exec_status, $valid_exec_statuses, true)) {
-    respond_history('error', ['message' => 'execution_status は success または failed を指定してください'], 400);
+    respond_history('error', ['message' => 'execution_status は success または failure を指定してください'], 400);
 }
 
 $valid_app_keys = ['analygent'];

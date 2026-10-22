@@ -45,6 +45,12 @@ if ($nodoai !== false && $nodoai !== "RETRY") {
 require_once __DIR__ . "/_case_access_helper.php";
 $user_id = ana_require_case_access($loginkey, $ai_case_id);
 
+// 期数は P1・P2・P3 のみ。それ以外は料金が決まらず無料で読取できてしまうため、何も書き込まずに止める
+if (!in_array($postingPeriod, ['P1', 'P2', 'P3'], true)) {
+    echo json_encode(["status" => "error", "message" => "異常アクセス"], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 if (!$images || !is_array($images)) {
     http_response_code(200);
     echo json_encode(['error' => '画像情報が不正または存在しません']);
@@ -149,6 +155,8 @@ $stmt->bind_param("sii", $request, $user_id, $ai_case_id);
 $stmt->execute();
 
 if(count($img_urls)!=count($images)){
+	// 上で status='AIST'（OCR読取中）にしているので、失敗にしてから終了する
+	do_ai_mark_error($conn, $ai_case_id);
 	echo json_encode([
 		"status" => "error",
 		"error" => "リクエストの画像枚数と案件の画像枚数と違います",
@@ -162,6 +170,7 @@ foreach ($img_urls as $path) {
         continue;
     }
     if (!file_exists($path)) {
+        do_ai_mark_error($conn, $ai_case_id);
         http_response_code(200);
         echo json_encode([
             'status' => 'error',
@@ -367,6 +376,17 @@ echo json_encode([
 
 
 // ---------- 関数定義 ----------
+// 読取を始められずに終了するとき、案件を 'AIERR'（画面表示「OCR読取失敗」）にする。
+// そうしないと 'AIST'（「OCR読取中」）のまま残ってしまう。
+function do_ai_mark_error($conn, $ai_case_id) {
+    $stmt = $conn->prepare("UPDATE ai_case SET status = 'AIERR', update_at = NOW() WHERE ai_case_id = ?");
+    if ($stmt) {
+        $stmt->bind_param("i", $ai_case_id);
+        $stmt->execute();
+        $stmt->close();
+    }
+}
+
 function call_ai($imagePath, $type, $kakudo, $upload_file_key,$ai_case_id) {
     global $python_base;
     global $backendbase;

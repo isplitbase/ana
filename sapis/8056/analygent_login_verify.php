@@ -25,8 +25,8 @@ function respond($status, $message, $extra = []) {
 function auth_to_role($auth) {
     $a = (int)$auth;
     switch ($a) {
-        case 300: return 'Admin';
-        case 200: return 'MasterAdmin';
+        case 300: return 'MasterAdmin';
+        case 200: return 'Admin';
         case 100: return 'User';
         default:  return 'Unknown';
     }

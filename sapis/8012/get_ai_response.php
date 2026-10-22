@@ -70,6 +70,22 @@ if (!isset($ai_case_id) || $ai_case_id==null) {
     exit;
 }
 
+// 読取直後の課金対象（do_ai_start=1）は、期数が P1・P2・P3 でなければ料金が決まらないため、
+// 何も書き込まずに止める（do_ai.php でも同じ確認をしている）
+$stmtPeriod = $conn->prepare("SELECT request, do_ai_start FROM ai_case WHERE ai_case_id = ?");
+$stmtPeriod->bind_param("i", $ai_case_id);
+$stmtPeriod->execute();
+$rowPeriod = $stmtPeriod->get_result()->fetch_assoc();
+$stmtPeriod->close();
+if ($rowPeriod && (int)$rowPeriod['do_ai_start'] === 1) {
+    $requestForPeriod = json_decode((string)$rowPeriod['request'], true);
+    $periodForCharge = is_array($requestForPeriod) ? ($requestForPeriod['postingPeriod'] ?? null) : null;
+    if (!in_array($periodForCharge, ['P1', 'P2', 'P3'], true)) {
+        echo json_encode(["status" => "error", "message" => "異常アクセス"], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+}
+
 // AIST または 1000 の場合のみ status を更新
 $stmt = $conn->prepare("
     UPDATE ai_case
@@ -124,18 +140,33 @@ while ($re = $result->fetch_assoc()) {
     $do_ai_start = (int)$re['do_ai_start'];
 }
 
-// JSONとしてデコード
-$responseDecoded = json_decode($response, true);
-$responseDecoded_old = json_decode($response, true);
-$response_pdf = json_decode($response_pdf, true);
-$response_2Decoded = json_decode($response_2, true);
+// JSONとしてデコード（1つずつ確かめる。以前は最後の response_2 の結果しか見ていなかった）
+$json_errors = [];
+$responseDecoded = json_decode((string)$response, true);
 if (json_last_error() !== JSON_ERROR_NONE) {
+    $json_errors[] = "response: " . json_last_error_msg();
+}
+$responseDecoded_old = $responseDecoded;
+// response_pdf は空の案件がある（空は従来どおり可）。中身があるときだけ確かめる
+$response_pdf_raw = (string)$response_pdf;
+$response_pdf = null;
+if ($response_pdf_raw !== '') {
+    $response_pdf = json_decode($response_pdf_raw, true);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        $json_errors[] = "response_pdf: " . json_last_error_msg();
+    }
+}
+$response_2Decoded = json_decode((string)$response_2, true);
+if (json_last_error() !== JSON_ERROR_NONE) {
+    $json_errors[] = "response_2: " . json_last_error_msg();
+}
+if ($json_errors) {
     $stmt_err = $conn->prepare("UPDATE ai_case SET status='AIERR', update_at=NOW() WHERE ai_case_id=?");
     $stmt_err->bind_param("i", $ai_case_id);
     $stmt_err->execute();
     echo json_encode([
         "status" => "error",
-        "message" => "responseフィールドのJSONデコードに失敗しました: " . json_last_error_msg(),
+        "message" => "responseフィールドのJSONデコードに失敗しました: " . implode(" / ", $json_errors),
         "raw" => $response
     ], JSON_UNESCAPED_UNICODE);
     exit;

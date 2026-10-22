@@ -135,17 +135,18 @@ function build_ai_case_list_response($conn, $user_id, $row_start, $row_end, $sea
                     $delete_at = $dt->format('Y-m-d H時');
                 }
                 break;
+            // B / C は、実際に削除するバッチ（internal/for_*/batch_delete_expired.py）と同じ 30日 / 365日で計算する
             case 'B':
                 if (!empty($update_at_val)) {
                     $dt = new DateTime($update_at_val);
-                    $dt->modify('+1 month');
+                    $dt->modify('+30 days');
                     $delete_at = $dt->format('Y-m-d H時');
                 }
                 break;
             case 'C':
                 if (!empty($update_at_val)) {
                     $dt = new DateTime($update_at_val);
-                    $dt->modify('+1 year');
+                    $dt->modify('+365 days');
                     $delete_at = $dt->format('Y-m-d H時');
                 }
                 break;
@@ -164,6 +165,8 @@ function build_ai_case_list_response($conn, $user_id, $row_start, $row_end, $sea
             "upload_at"        => $re['create_at'],
             "delete_at"        => $delete_at,
             "update_user_id"   => $re['update_user_id'] !== null ? (int)$re['update_user_id'] : null,
+            // 作成者のID（削除・案件名変更の権限は作成者で判定するため。名前は同姓同名がありえる）
+            "create_user_id"   => $re['user_id'] !== null ? (int)$re['user_id'] : null,
             "create_user_name" => $re['create_user_name'] ?? null,
             "update_user_name" => (!empty($re['update_user_id']))
                                     ? ($re['update_user_name'] ?? null)
