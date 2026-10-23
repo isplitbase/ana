@@ -86,6 +86,34 @@ if (!empty($__key_to_name) && is_array($request)
         }
     }
 }
+// 2026-10-23 追加：画像の署名付き URL を、開くたびに作り直す。
+// imgtype_request に保存してある URL は PDF を画像にした時点で作られ、7日で切れる。
+// 一覧から古い案件の「ファイル確認」を開くと、期限切れで画像が出なかった。
+// 作り直しに失敗したときは、保存してある URL のまま返す（今までと同じ動き）。
+if (is_array($request) && !empty($request["images"]) && is_array($request["images"])) {
+	try {
+		global $gcs_bucket, $google_application_credentials;
+		$__autoload = file_exists(__DIR__ . "/vendor/autoload.php") ? __DIR__ . "/vendor/autoload.php" : __DIR__ . "/../vendor/autoload.php";
+		if (file_exists($__autoload)) { require_once $__autoload; }
+		if (!empty($gcs_bucket) && !empty($google_application_credentials) && class_exists("\\Google\\Cloud\\Storage\\StorageClient")) {
+			$__storage = new \Google\Cloud\Storage\StorageClient(["keyFilePath" => $google_application_credentials]);
+			$__bucket = $__storage->bucket($gcs_bucket);
+			$__expires = new DateTime("+6 days");   // V4 署名の上限は7日
+			foreach ($request["images"] as $__idx => $__img) {
+				$__u = is_array($__img) ? (string)($__img["images_urls"] ?? "") : "";
+				if (!preg_match('#^https://storage\.googleapis\.com/([^/?]+)/([^?]+)#', $__u, $__m)) { continue; }
+				if ($__m[1] !== $gcs_bucket) { continue; }
+				try {
+					$request["images"][$__idx]["images_urls"] = $__bucket->object(rawurldecode($__m[2]))->signedUrl($__expires, ["version" => "v4"]);
+				} catch (Throwable $__e) {
+					error_log("get_upload_files_response: 署名の作り直しに失敗 ai_case_id={$ai_case_id} " . $__e->getMessage());
+				}
+			}
+		}
+	} catch (Throwable $__e) {
+		error_log("get_upload_files_response: 署名の作り直しを飛ばした ai_case_id={$ai_case_id} " . $__e->getMessage());
+	}
+}
 $request["status"]="success";
 $request["message"]="帳票種類識別完了";
 // JSONとして整形出力（日本語そのまま）
