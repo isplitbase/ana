@@ -771,6 +771,83 @@ def remap_item_by_upload_key(item: dict, upload_key: str) -> dict:
 
     # 期以外のフィールド（勘定科目・分類など）は deepcopy 済みなので保持されます
     return new_item
+# ============================================================
+# 2026-10-23 追加：読取結果を Claude（Opus）で PDF と見比べて直す
+#   解析結果確認のサービス（ana-cash-ai-1-1-checkbyclaude）の /v1/correct を呼ぶ。
+#   合計の検算で裏付けが取れた修正だけが反映される（サービス側で判定）。
+#   呼び出しに失敗したときは、元の読取結果をそのまま使う（読取は止めない）。
+#   AI が利用制限などで使えないときも、サービス側でモデルを切り替え、駄目なら修正せずに返す（エラーにしない）。
+#   結果は /var/log/pys/<案件>_ai_correct.json（詳細）と /var/log/ana/ai_correct_<日付>.log（1案件1行）に残す。
+#   pf に "ai_correct": "OFF" と書けば止められる。
+# ============================================================
+AI_CORRECT_URLS = {
+    "8012": "https://ana-cash-ai-1-1-checkbyclaude-real-512697354748.asia-northeast1.run.app",
+    "8056": "https://ana-cash-ai-1-1-checkbyclaude-512697354748.asia-northeast1.run.app",
+}
+AI_CORRECT_SA_JSON = "/srv/www/apps/analygent_backend/internal/gen-lang-client-0018414550-f50b079b0584.json"
+
+def _ai_correct_monitor(ai_case_id, status, started, **fields):
+    """監視用に1案件1行で残す（例：grep -v \"status=ok\" /var/log/ana/ai_correct_*.log で失敗や切り替えだけ見られる）"""
+    try:
+        from datetime import datetime as _dt
+        line = " ".join([_dt.now().strftime("%Y-%m-%d %H:%M:%S"), f"port={db_config.get('port', '')}", f"case={ai_case_id}",
+                         f"status={status}", f"sec={int(time.time() - started)}"] +
+                        [f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in fields.items()])
+        with open("/var/log/ana/ai_correct_" + _dt.now().strftime("%Y%m%d") + ".log", "a", encoding="utf-8") as _f:
+            _f.write(line + "\n")
+    except Exception:
+        pass
+
+def ai_correct_response_sorted(response_sorted, ai_case_id):
+    base = AI_CORRECT_URLS.get(str(db_config.get("port", "")))
+    if not base or str(db_config.get("ai_correct", "")).upper() == "OFF":
+        return response_sorted
+    progress_path = db_config.get("www_dir", "") + "progress/" + str(ai_case_id)
+    started = time.time()
+    try:
+        write_progress("AIで読取結果を確認中", progress_path)
+        _conn = mysql.connector.connect(**_connect_args)
+        _cur = _conn.cursor()
+        _cur.execute("SELECT full_file_Paths FROM ai_case WHERE ai_case_id = %s LIMIT 1", (ai_case_id,))
+        _row = _cur.fetchone()
+        _cur.close()
+        _conn.close()
+        pdfurls = [u.strip() for u in str((_row or [""])[0] or "").split("|,|") if u.strip().startswith("gs://")]
+        if not pdfurls:
+            print("ai_correct: PDF が無いのでスキップ")
+            return response_sorted
+        from google.oauth2 import service_account as _sa
+        from google.auth.transport.requests import Request as _Req
+        _creds = _sa.IDTokenCredentials.from_service_account_file(AI_CORRECT_SA_JSON, target_audience=base)
+        _creds.refresh(_Req())
+        r = requests.post(
+            base + "/v1/correct",
+            json={"ai_case_id": ai_case_id, "pdfurls": pdfurls, "response": response_sorted},
+            headers={"Authorization": f"Bearer {_creds.token}"},
+            timeout=(10, 900),
+        )
+        result = r.json() if r.status_code == 200 else {"status": "error", "message": f"HTTP {r.status_code}", "detail": r.text[:1000]}
+        log = {k: v for k, v in result.items() if k != "response"}
+        try:
+            with open(f"/var/log/pys/{ai_case_id}_ai_correct.json", "w", encoding="utf-8") as _f:
+                json.dump(log, _f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        print("ai_correct:", json.dumps({k: (len(v) if isinstance(v, list) else v) for k, v in log.items()}, ensure_ascii=False))
+        _ai_correct_monitor(ai_case_id, result.get("status", "error"), started, model=result.get("model", ""),
+                            applied=len(result.get("applied") or []), rejected=len(result.get("rejected") or []),
+                            unverified=len(result.get("unverified") or []),
+                            fallback=[a.get("model", "") + ":" + a.get("error", "") for a in (result.get("attempts") or [])],
+                            message=result.get("message", ""))
+        new = result.get("response")
+        if result.get("status") == "ok" and isinstance(new, dict) and all(isinstance(new.get(k, []), list) for k in response_sorted):
+            return {k: new.get(k, response_sorted[k]) for k in response_sorted}
+    except Exception as e:
+        print("ai_correct: 失敗したので元の読取結果を使う:", repr(e))
+        traceback.print_exc()
+        _ai_correct_monitor(ai_case_id, "exception", started, error=repr(e)[:300])
+    return response_sorted
+
 # メイン処理
 # APIキー読み込み
 config_path = Path(__file__).parent / "pf"
@@ -2538,6 +2615,7 @@ try:
             if t in response_sorted:
                 response_sorted[t].append(row)
 
+        response_sorted = ai_correct_response_sorted(response_sorted, ai_case_id)  # 2026-10-23 追加
         normalized_json_str = json.dumps(response_sorted, ensure_ascii=False)
 
         # tani を入れたい（unit_str がある想定。無ければ空）
@@ -3517,6 +3595,7 @@ try:
     #        writer.writeheader()
     #        writer.writerows(all_rows)
 
+    response_sorted = ai_correct_response_sorted(response_sorted, ai_case_id)  # 2026-10-23 追加
     normalized_json_str = json.dumps(response_sorted, ensure_ascii=False)
 
 
